@@ -1,0 +1,2 @@
+[console_scripts]
+noraa = noraa.cli:app
