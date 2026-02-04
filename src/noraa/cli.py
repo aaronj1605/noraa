@@ -1,94 +1,123 @@
+from __future__ import annotations
+
 from pathlib import Path
-from datetime import datetime
-import shutil
-import subprocess
+import os
 import typer
+
+from .util import git_root, log_dir, run_streamed, safe_check_output
+from .snapshot import write_env_snapshot, write_tool_snapshot
+from .validate import validate_mpas_success
+from .agent.diagnose import diagnose_log
 
 app = typer.Typer(add_completion=False)
 
-def git_root(path: Path) -> Path:
-    out = subprocess.check_output(
-        ["git", "-C", str(path), "rev-parse", "--show-toplevel"],
-        text=True,
-    ).strip()
-    return Path(out)
 
-def log_dir(repo_root: Path, action: str) -> Path:
-    ts = datetime.now().strftime("%Y%m%d-%H%M%S")
-    d = repo_root / ".noraa" / "logs" / f"{ts}-{action}"
-    d.mkdir(parents=True, exist_ok=True)
-    return d
+def _target_repo(path: str) -> Path:
+    return git_root(Path(path).resolve())
 
-def run_cmd(cmd, cwd, out_dir):
-    p = subprocess.Popen(
-        cmd,
-        cwd=cwd,
-        stdout=subprocess.PIPE,
-        stderr=subprocess.PIPE,
-        text=True,
-    )
-    out, err = p.communicate()
-    (out_dir / "command.txt").write_text(" ".join(cmd))
-    (out_dir / "stdout.txt").write_text(out or "")
-    (out_dir / "stderr.txt").write_text(err or "")
-    return p.returncode
 
-def tool(*names):
-    for n in names:
-        p = shutil.which(n)
-        if p:
-            return p
-    return None
+def _build_env(deps_prefix: str | None, esmf_mkfile: str | None) -> dict[str, str]:
+    env = os.environ.copy()
+    if deps_prefix:
+        env["DEPS_PREFIX"] = deps_prefix
+        env["CMAKE_PREFIX_PATH"] = deps_prefix
+        env["PATH"] = f"{deps_prefix}/bin:" + env.get("PATH", "")
+        env["LD_LIBRARY_PATH"] = f"{deps_prefix}/lib:{deps_prefix}/lib64:" + env.get("LD_LIBRARY_PATH", "")
+    if esmf_mkfile:
+        env["ESMFMKFILE"] = esmf_mkfile
+    return env
+
 
 @app.command()
-def doctor(path: str = "."):
-    repo = git_root(Path(path).resolve())
-    out = log_dir(repo, "doctor")
-    tools = {
-        "git": tool("git"),
-        "python": tool("python3", "python"),
-        "cmake": tool("cmake"),
-        "make": tool("make", "gmake"),
-        "mpiexec": tool("mpiexec", "mpirun"),
-    }
-    ok = True
-    lines = []
-    for k, v in tools.items():
-        if v:
-            lines.append(f"[ok] {k}: {v}")
-        else:
-            ok = False
-            lines.append(f"[missing] {k}")
-    (out / "doctor.txt").write_text("\n".join(lines) + "\n")
-    print("\n".join(lines))
+def doctor(repo: str = typer.Option(".", "--repo")):
+    repo_root = _target_repo(repo)
+    out = log_dir(repo_root, "doctor")
+    env = os.environ.copy()
+    write_env_snapshot(out, env)
+    write_tool_snapshot(out, env)
+    print((out / "tools.txt").read_text(), end="")
     print(f"Logs: {out}")
-    raise SystemExit(0 if ok else 2)
+    status = (out / "snapshot_status.txt").read_text().strip()
+    raise SystemExit(0 if status == "ok" else 2)
+
 
 @app.command()
-def init(path: str = ".", force: bool = False):
-    repo = git_root(Path(path).resolve())
-    cfg = repo / ".noraa" / "config.toml"
+def init(repo: str = typer.Option(".", "--repo"), force: bool = False):
+    repo_root = _target_repo(repo)
+    cfg = repo_root / ".noraa" / "config.toml"
     cfg.parent.mkdir(parents=True, exist_ok=True)
     if cfg.exists() and not force:
         print(f"Config already exists: {cfg}")
         print("Use --force to overwrite.")
-        return
+        raise SystemExit(0)
     cfg.write_text('version = 1\n[verify]\nscript = "scripts/verify_mpas_smoke.sh"\n')
     print(f"Wrote {cfg}")
 
+
 @app.command()
-def verify(path: str = "."):
-    repo = git_root(Path(path).resolve())
-    out = log_dir(repo, "verify")
-    script = repo / "scripts" / "verify_mpas_smoke.sh"
+def verify(
+    repo: str = typer.Option(".", "--repo"),
+    deps_prefix: str = typer.Option(None, "--deps-prefix"),
+    esmf_mkfile: str = typer.Option(None, "--esmf-mkfile"),
+    clean: bool = typer.Option(True, "--clean/--no-clean"),
+):
+    repo_root = _target_repo(repo)
+    out = log_dir(repo_root, "verify")
+    env = _build_env(deps_prefix, esmf_mkfile)
+
+    write_env_snapshot(out, env)
+    write_tool_snapshot(out, env)
+
+    script = repo_root / "scripts" / "verify_mpas_smoke.sh"
     if not script.exists():
         raise SystemExit(f"Missing verify script: {script}")
-    rc = run_cmd(["bash", str(script)], str(repo), out)
-    (out / "result.txt").write_text(f"exit_code={rc}\n")
-    if rc != 0:
-        print(f"VERIFY FAILED (exit {rc}). Logs: {out}")
-        raise SystemExit(rc)
+
+    if clean:
+        safe_check_output(["bash", "-lc", "rm -rf .noraa/build"], cwd=repo_root, env=env)
+
+    rc = run_streamed(["bash", str(script)], repo_root, out, env)
+    (out / "exit_code.txt").write_text(f"{rc}\n")
+
+    v = validate_mpas_success(repo_root, deps_prefix, out)
+    (out / "postcheck.txt").write_text(f"ok={v.ok}\nreason={v.reason}\n")
+
+    if rc != 0 or not v.ok:
+        code, msg = diagnose_log(out, repo_root, deps_prefix=deps_prefix)
+        (out / "diagnosis.txt").write_text(msg)
+        print(f"VERIFY FAILED. Logs: {out}")
+        print(msg, end="")
+        raise SystemExit(code)
+
     print(f"VERIFY PASSED. Logs: {out}")
 
-if __name__ == "__main__":
+
+@app.command()
+def diagnose(
+    repo: str = typer.Option(".", "--repo"),
+    log_dir_path: str = typer.Option(None, "--log-dir"),
+    deps_prefix: str = typer.Option(None, "--deps-prefix"),
+):
+    repo_root = _target_repo(repo)
+
+    if log_dir_path:
+        ld = Path(log_dir_path).resolve()
+    else:
+        logs_root = repo_root / ".noraa" / "logs"
+        if not logs_root.exists():
+            raise SystemExit("No .noraa/logs directory found under the target repo.")
+        candidates = sorted([p for p in logs_root.iterdir() if p.is_dir() and "verify" in p.name])
+        if not candidates:
+            raise SystemExit("No verify logs found.")
+        ld = candidates[-1]
+
+    code, msg = diagnose_log(ld, repo_root, deps_prefix=deps_prefix)
+    print(msg, end="")
+    raise SystemExit(code)
+
+
+def main():
     app()
+
+
+if __name__ == "__main__":
+    main()
