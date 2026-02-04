@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from pathlib import Path
 import os
+from shutil import which
 import typer
 
 from .util import git_root, log_dir, run_streamed, safe_check_output
@@ -81,7 +82,7 @@ def init(
         print("Detected target repo origin does not match the official upstream.")
         print(f"  detected origin: {origin}")
         print(f"  official upstream: {upstream_url}")
-        use_fork = typer.confirm("Do you want to proceed using a fork?", default=False)
+        use_fork = typer.confirm("Do you want to proceed using a fork?", default=True)
         if not use_fork:
             print("No changes made.")
             print("To point this repo to upstream, run:")
@@ -100,7 +101,7 @@ def init(
 @app.command()
 def doctor(repo: str = typer.Option(".", "--repo")):
     repo_root = _target_repo(repo)
-    cfg = _require_project(repo_root)
+    _ = _require_project(repo_root)
 
     out = log_dir(repo_root, "doctor")
     env = os.environ.copy()
@@ -109,7 +110,6 @@ def doctor(repo: str = typer.Option(".", "--repo")):
 
     print((out / "tools.txt").read_text(), end="")
 
-    # Guidance: if user has not provided DEPS_PREFIX in env, explain next step
     tools_txt = (out / "tools.txt").read_text()
     if "mpiexec: /usr/bin/mpiexec" in tools_txt or "mpicc: /usr/bin/mpicc" in tools_txt:
         print("\nNOTE: System MPI detected in PATH.")
@@ -187,7 +187,7 @@ def diagnose(
     esmf_mkfile: str = typer.Option(None, "--esmf-mkfile"),
 ):
     repo_root = _target_repo(repo)
-    _require_project(repo_root)
+    _ = _require_project(repo_root)
 
     if log_dir_path:
         ld = Path(log_dir_path).resolve()
@@ -231,10 +231,12 @@ def bootstrap(
     - If dest exists and is a git repo: do not modify it, just instruct to run noraa init.
     - After clone/init, prints the next commands for doctor + verify.
     """
+    if which("git") is None:
+        raise SystemExit("git not found in PATH. Install git and retry.")
+
     dest_path = Path(dest).expanduser().resolve()
 
     if dest_path.exists():
-        # If it's already a git repo, do not touch it.
         git_dir = dest_path / ".git"
         if git_dir.exists():
             print("Destination already exists and looks like a git repo.")
@@ -258,7 +260,6 @@ def bootstrap(
     if rc != 0:
         raise SystemExit(rc)
 
-    # Initialize project.toml under the cloned repo without prompts (it should be upstream)
     repo_root = _target_repo(str(dest_path))
     cfg = ProjectConfig(repo_path=str(repo_root), upstream_url=upstream_url)
     write_project(repo_root, cfg)
@@ -272,7 +273,6 @@ def bootstrap(
         "    --deps-prefix /path/to/deps \\\n"
         '    --esmf-mkfile "/path/to/esmf.mk"\n'
     )
-
 
 
 def main():
