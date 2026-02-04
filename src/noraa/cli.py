@@ -8,6 +8,13 @@ from .util import git_root, log_dir, run_streamed, safe_check_output
 from .snapshot import write_env_snapshot, write_tool_snapshot
 from .validate import validate_mpas_success
 from .agent.diagnose import diagnose_log
+from .project import (
+    ProjectConfig,
+    load_project,
+    write_project,
+    validate_repo_origin,
+    get_origin_url,
+)
 
 app = typer.Typer(add_completion=False)
 
@@ -28,30 +35,94 @@ def _build_env(deps_prefix: str | None, esmf_mkfile: str | None) -> dict[str, st
     return env
 
 
+def _require_project(repo_root: Path) -> ProjectConfig:
+    cfg = load_project(repo_root)
+    if cfg is None:
+        raise SystemExit(
+            "Missing .noraa/project.toml under the target repo.\n"
+            "Run:\n"
+            f"  noraa init --repo {repo_root}\n"
+        )
+    ok, msg = validate_repo_origin(repo_root, cfg)
+    if not ok:
+        raise SystemExit(
+            "Repo remote validation failed.\n"
+            f"{msg}\n\n"
+            "If you intended to use a fork, run:\n"
+            f"  noraa init --repo {repo_root} --force\n"
+        )
+    return cfg
+
+
+@app.command()
+def init(
+    repo: str = typer.Option(".", "--repo"),
+    force: bool = typer.Option(False, "--force"),
+    upstream_url: str = typer.Option("https://github.com/NOAA-EMC/ufsatm.git", "--upstream-url"),
+):
+    repo_root = _target_repo(repo)
+
+    existing = load_project(repo_root)
+    if existing is not None and not force:
+        p = repo_root / ".noraa" / "project.toml"
+        print(f"Project file already exists: {p}")
+        print("Use --force to overwrite.")
+        raise SystemExit(0)
+
+    origin = ""
+    try:
+        origin = get_origin_url(repo_root)
+    except Exception:
+        origin = ""
+
+    cfg = ProjectConfig(repo_path=str(repo_root), upstream_url=upstream_url)
+
+    if origin and origin.rstrip("/") != upstream_url.rstrip("/"):
+        print("Detected target repo origin does not match the official upstream.")
+        print(f"  detected origin: {origin}")
+        print(f"  official upstream: {upstream_url}")
+        use_fork = typer.confirm("Do you want to proceed using a fork?", default=False)
+        if not use_fork:
+            print("No changes made.")
+            print("To point this repo to upstream, run:")
+            print(f"  cd {repo_root}")
+            print(f"  git remote set-url origin {upstream_url}")
+            raise SystemExit(2)
+
+        fork_url = typer.prompt("Paste your fork URL (or press Enter to use detected origin)", default=origin)
+        cfg.allow_fork = True
+        cfg.fork_url = fork_url
+
+    p = write_project(repo_root, cfg)
+    print(f"Wrote {p}")
+
+
 @app.command()
 def doctor(repo: str = typer.Option(".", "--repo")):
     repo_root = _target_repo(repo)
+    cfg = _require_project(repo_root)
+
     out = log_dir(repo_root, "doctor")
     env = os.environ.copy()
     write_env_snapshot(out, env)
     write_tool_snapshot(out, env)
+
     print((out / "tools.txt").read_text(), end="")
+
+    # Guidance: if user has not provided DEPS_PREFIX in env, explain next step
+    tools_txt = (out / "tools.txt").read_text()
+    if "mpiexec: /usr/bin/mpiexec" in tools_txt or "mpicc: /usr/bin/mpicc" in tools_txt:
+        print("\nNOTE: System MPI detected in PATH.")
+        print("If you have a deps prefix, run verify like this:")
+        print(
+            "  noraa verify --repo " + str(repo_root) + " \\\n"
+            "    --deps-prefix /path/to/deps \\\n"
+            '    --esmf-mkfile "/path/to/esmf.mk"\n'
+        )
+
     print(f"Logs: {out}")
     status = (out / "snapshot_status.txt").read_text().strip()
     raise SystemExit(0 if status == "ok" else 2)
-
-
-@app.command()
-def init(repo: str = typer.Option(".", "--repo"), force: bool = False):
-    repo_root = _target_repo(repo)
-    cfg = repo_root / ".noraa" / "config.toml"
-    cfg.parent.mkdir(parents=True, exist_ok=True)
-    if cfg.exists() and not force:
-        print(f"Config already exists: {cfg}")
-        print("Use --force to overwrite.")
-        raise SystemExit(0)
-    cfg.write_text('version = 1\n[verify]\nscript = "scripts/verify_mpas_smoke.sh"\n')
-    print(f"Wrote {cfg}")
 
 
 @app.command()
@@ -62,13 +133,15 @@ def verify(
     clean: bool = typer.Option(True, "--clean/--no-clean"),
 ):
     repo_root = _target_repo(repo)
+    cfg = _require_project(repo_root)
+
     out = log_dir(repo_root, "verify")
     env = _build_env(deps_prefix, esmf_mkfile)
 
     write_env_snapshot(out, env)
     write_tool_snapshot(out, env)
 
-    script = repo_root / "scripts" / "verify_mpas_smoke.sh"
+    script = repo_root / cfg.verify_script
     if not script.exists():
         raise SystemExit(f"Missing verify script: {script}")
 
@@ -114,6 +187,7 @@ def diagnose(
     esmf_mkfile: str = typer.Option(None, "--esmf-mkfile"),
 ):
     repo_root = _target_repo(repo)
+    _require_project(repo_root)
 
     if log_dir_path:
         ld = Path(log_dir_path).resolve()
@@ -143,6 +217,62 @@ def diagnose(
 
     print(msg, end="")
     raise SystemExit(code)
+
+
+@app.command()
+def bootstrap(
+    dest: str = typer.Option(str(Path.home() / "work" / "ufsatm"), "--dest"),
+    upstream_url: str = typer.Option("https://github.com/NOAA-EMC/ufsatm.git", "--upstream-url"),
+):
+    """
+    Create a fresh upstream ufsatm checkout (if needed) and initialize NORAA config under it.
+
+    - If dest does not exist: clone upstream into dest.
+    - If dest exists and is a git repo: do not modify it, just instruct to run noraa init.
+    - After clone/init, prints the next commands for doctor + verify.
+    """
+    dest_path = Path(dest).expanduser().resolve()
+
+    if dest_path.exists():
+        # If it's already a git repo, do not touch it.
+        git_dir = dest_path / ".git"
+        if git_dir.exists():
+            print("Destination already exists and looks like a git repo.")
+            print("Run this instead:")
+            print(f"  noraa init --repo {dest_path}")
+            raise SystemExit(0)
+
+        print("Destination path already exists but is not a git repo.")
+        print("Choose a different --dest or remove the directory.")
+        raise SystemExit(2)
+
+    dest_path.parent.mkdir(parents=True, exist_ok=True)
+
+    print(f"Cloning upstream ufsatm into: {dest_path}")
+    rc = run_streamed(
+        ["git", "clone", upstream_url, str(dest_path)],
+        cwd=dest_path.parent,
+        out_dir=log_dir(dest_path.parent, "bootstrap-clone"),
+        env=os.environ.copy(),
+    )
+    if rc != 0:
+        raise SystemExit(rc)
+
+    # Initialize project.toml under the cloned repo without prompts (it should be upstream)
+    repo_root = _target_repo(str(dest_path))
+    cfg = ProjectConfig(repo_path=str(repo_root), upstream_url=upstream_url)
+    write_project(repo_root, cfg)
+
+    print("Initialized NORAA config:")
+    print(f"  {repo_root / '.noraa' / 'project.toml'}")
+    print("\nNext steps:")
+    print(f"  noraa doctor --repo {repo_root}")
+    print(
+        f"  noraa verify --repo {repo_root} \\\n"
+        "    --deps-prefix /path/to/deps \\\n"
+        '    --esmf-mkfile "/path/to/esmf.mk"\n'
+    )
+
 
 
 def main():
