@@ -82,9 +82,24 @@ def verify(
     (out / "postcheck.txt").write_text(f"ok={v.ok}\nreason={v.reason}\n")
 
     if rc != 0 or not v.ok:
-        code, msg = diagnose_log(out, repo_root, deps_prefix=deps_prefix)
+        code, msg, rule_id, script_text = diagnose_log(
+            out,
+            repo_root,
+            deps_prefix=deps_prefix,
+            esmf_mkfile=esmf_mkfile or env.get("ESMFMKFILE"),
+        )
         (out / "diagnosis.txt").write_text(msg)
+
+        fix_path = None
+        if rule_id and script_text:
+            fix_path = out / f"fix_{rule_id}.sh"
+            fix_path.write_text(script_text)
+            os.chmod(fix_path, 0o755)
+
         print(f"VERIFY FAILED. Logs: {out}")
+        if fix_path:
+            print(f"Generated fix script: {fix_path}")
+            print(f"Run it with: bash {fix_path}")
         print(msg, end="")
         raise SystemExit(code)
 
@@ -96,6 +111,7 @@ def diagnose(
     repo: str = typer.Option(".", "--repo"),
     log_dir_path: str = typer.Option(None, "--log-dir"),
     deps_prefix: str = typer.Option(None, "--deps-prefix"),
+    esmf_mkfile: str = typer.Option(None, "--esmf-mkfile"),
 ):
     repo_root = _target_repo(repo)
 
@@ -110,7 +126,21 @@ def diagnose(
             raise SystemExit("No verify logs found.")
         ld = candidates[-1]
 
-    code, msg = diagnose_log(ld, repo_root, deps_prefix=deps_prefix)
+    code, msg, rule_id, script_text = diagnose_log(
+        ld,
+        repo_root,
+        deps_prefix=deps_prefix,
+        esmf_mkfile=esmf_mkfile,
+    )
+    (ld / "diagnosis.txt").write_text(msg)
+
+    if rule_id and script_text:
+        fix_path = ld / f"fix_{rule_id}.sh"
+        fix_path.write_text(script_text)
+        os.chmod(fix_path, 0o755)
+        print(f"Generated fix script: {fix_path}")
+        print(f"Run it with: bash {fix_path}")
+
     print(msg, end="")
     raise SystemExit(code)
 

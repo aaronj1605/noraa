@@ -8,7 +8,7 @@ match_any_regex:
   - "ompi_mpi_errors_throw_exceptions"
   - "libmpi_cxx\\.so"
 summary: >
-  The build is mixing two different Open MPI runtimes (often system Open MPI vs deps Open MPI).
+  The build is mixing two different Open MPI runtimes (often system Open MPI vs a deps Open MPI).
 likely_cause: >
   ESMF was built or linked against a different MPI than the MPI wrappers used for the ufsatm MPAS build.
 evidence_commands:
@@ -16,19 +16,25 @@ evidence_commands:
   - "mpiexec --version || true"
   - "echo DEPS_PREFIX=$DEPS_PREFIX"
   - "echo ESMFMKFILE=$ESMFMKFILE"
-  - "ldd {mpas_exe} | grep -E 'libmpi|open-pal|pmix|open-rte' || true"
+  - "test -f \"{mpas_exe}\" && ldd \"{mpas_exe}\" | grep -E 'libmpi|open-pal|pmix|open-rte' || true"
 fix_steps:
-  - "export DEPS_PREFIX={deps_prefix}"
+  - "# 1) Ensure you are using the intended MPI wrappers"
+  - "export DEPS_PREFIX=\"{deps_prefix}\""
   - "export PATH=\"$DEPS_PREFIX/bin:$PATH\""
   - "export LD_LIBRARY_PATH=\"$DEPS_PREFIX/lib:$DEPS_PREFIX/lib64:${LD_LIBRARY_PATH:-}\""
-  - "# Rebuild ESMF against the same MPI stack, install to a fresh prefix"
-  - "export ESMF_SRC=\"$HOME/opt/esmf-8.6.1\""
-  - "export ESMF_INSTALL_PREFIX=\"$HOME/opt/esmf-install-ompi5\""
+  - ""
+  - "# 2) Rebuild ESMF against the same MPI stack used by the build"
+  - "# Set these paths for your machine:"
+  - "export ESMF_SRC=\"{esmf_src}\""
+  - "export ESMF_INSTALL_PREFIX=\"{esmf_install_prefix}\""
   - "cd \"$ESMF_SRC\""
   - "make distclean || true"
   - "make -j$(nproc) && make install"
-  - "export ESMFMKFILE=\"$ESMF_INSTALL_PREFIX/lib/libO/Linux.gfortran.64.openmpi.default/esmf.mk\""
-  - "# Re-run verify"
-  - "cd {repo_root}"
+  - ""
+  - "# 3) Point builds at the matching esmf.mk"
+  - "export ESMFMKFILE=\"{esmf_mkfile}\""
+  - ""
+  - "# 4) Re-run verify"
+  - "cd \"{repo_root}\""
   - "rm -rf .noraa/build"
   - "DEPS_PREFIX=\"$DEPS_PREFIX\" ESMFMKFILE=\"$ESMFMKFILE\" bash scripts/verify_mpas_smoke.sh"

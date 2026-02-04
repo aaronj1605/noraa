@@ -52,45 +52,51 @@ def diagnose_log(
     log_dir: Path,
     repo_root: Path,
     deps_prefix: str | None = None,
-) -> tuple[int, str]:
+    esmf_mkfile: str | None = None,
+) -> tuple[int, str, str | None, str | None]:
     stdout = _read_text(log_dir / "stdout.txt")
     stderr = _read_text(log_dir / "stderr.txt")
     combined = stdout + "\n" + stderr
 
     rules = _load_rules()
-    hits: list[Rule] = []
+    hit: Rule | None = None
     for r in rules:
         for pat in r.match_any_regex:
             if re.search(pat, combined, flags=re.IGNORECASE | re.MULTILINE):
-                hits.append(r)
+                hit = r
                 break
+        if hit:
+            break
 
-    if not hits:
+    if not hit:
         msg = "No known rule matched this failure. Review logs and snapshot files in: " + str(log_dir)
-        return 2, msg + "\n"
+        return 2, msg + "\n", None, None
 
-    r = hits[0]
     mpas_exe = repo_root / ".noraa" / "build" / "bin" / "mpas_atmosphere"
+
     substitutions = {
         "deps_prefix": deps_prefix or "<set DEPS_PREFIX>",
         "repo_root": str(repo_root),
         "mpas_exe": str(mpas_exe),
+        "esmf_src": "<path to ESMF source>",
+        "esmf_install_prefix": "<path to ESMF install prefix>",
+        "esmf_mkfile": esmf_mkfile or "<path to esmf.mk>",
     }
 
     def fmt(line: str) -> str:
         return line.format(**substitutions)
 
-    fix = "\n".join(fmt(s) for s in r.fix_steps)
-    evidence = "\n".join(fmt(s) for s in r.evidence_commands)
+    evidence = "\n".join(fmt(s) for s in hit.evidence_commands)
+    fix = "\n".join(fmt(s) for s in hit.fix_steps)
 
-    out = textwrap.dedent(
+    msg = textwrap.dedent(
         f"""\
-        Diagnosis: {r.title}
-        Rule: {r.id}
-        Summary: {r.summary}
+        Diagnosis: {hit.title}
+        Rule: {hit.id}
+        Summary: {hit.summary}
 
         Likely cause:
-        {r.likely_cause}
+        {hit.likely_cause}
 
         Evidence commands:
         {evidence}
@@ -100,4 +106,5 @@ def diagnose_log(
         """
     ).rstrip() + "\n"
 
-    return 2, out
+    script = "#!/usr/bin/env bash\nset -euo pipefail\n\n" + fix.strip() + "\n"
+    return 2, msg, hit.id, script
