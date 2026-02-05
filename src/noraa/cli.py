@@ -172,7 +172,23 @@ def verify(
     cfg = _require_project(repo_root)
 
     out = log_dir(repo_root, "verify")
+    esmf_mkfile = _require_esmf(repo_root, deps_prefix, esmf_mkfile)
     env = _build_env(deps_prefix, esmf_mkfile)
+
+    _require_esmf(deps_prefix, esmf_mkfile)
+
+def _require_esmf(deps_prefix: str | None, esmf_mkfile: str | None):
+    if esmf_mkfile and Path(esmf_mkfile).exists():
+        return
+    if deps_prefix:
+        mk = Path(deps_prefix) / "lib" / "esmf.mk"
+        if mk.exists():
+            return
+    raise SystemExit(
+        "ESMF not found. Run: noraa bootstrap esmf --repo <ufsatm>\n"
+        "or provide --esmf-mkfile / --deps-prefix"
+    )
+
 
     write_env_snapshot(out, env)
     write_tool_snapshot(out, env)
@@ -210,3 +226,114 @@ def main():
 
 if __name__ == "__main__":
     main()
+
+
+@app.command()
+def bootstrap(
+    repo: str = typer.Option(".", "--repo"),
+    component: str = typer.Argument(...),
+):
+    repo_root = _target_repo(repo)
+    _require_project(repo_root)
+
+    if component != "esmf":
+        raise SystemExit("Only supported bootstrap component is: esmf")
+
+    out = log_dir(repo_root, "bootstrap-esmf")
+    build_dir = repo_root / ".noraa" / "esmf"
+    src_dir = build_dir / "src"
+    inst_dir = build_dir / "install"
+
+    build_dir.mkdir(parents=True, exist_ok=True)
+
+    if not src_dir.exists():
+        run_streamed(
+            ["git", "clone", "--depth", "1", "--branch", "v8.6.1",
+             "https://github.com/esmf-org/esmf.git", str(src_dir)],
+            repo_root, out, None
+        )
+
+    env = os.environ.copy()
+    env["ESMF_DIR"] = str(inst_dir)
+    env["ESMF_INSTALL_PREFIX"] = str(inst_dir)
+    env["ESMF_COMM"] = "openmpi"
+    env["ESMF_COMPILER"] = "gfortran"
+    env["ESMF_NETCDF"] = "nc-config"
+
+    rc = run_streamed(
+        ["bash", "-lc", "make install"],
+        src_dir, out, env
+    )
+
+    if rc != 0:
+        raise SystemExit("ESMF bootstrap failed")
+
+    print(f"ESMF installed under {inst_dir}")
+
+
+def _bootstrapped_esmf_mk(repo_root: Path) -> Path | None:
+    mk = repo_root / ".noraa" / "esmf" / "install" / "lib" / "esmf.mk"
+    return mk if mk.exists() else None
+
+
+def _require_esmf(repo_root: Path, deps_prefix: str | None, esmf_mkfile: str | None) -> str:
+    if esmf_mkfile and Path(esmf_mkfile).exists():
+        return esmf_mkfile
+
+    mk = _bootstrapped_esmf_mk(repo_root)
+    if mk:
+        return str(mk)
+
+    if deps_prefix:
+        p = Path(deps_prefix) / "lib" / "esmf.mk"
+        if p.exists():
+            return str(p)
+
+    raise SystemExit(
+        "ESMF not found. Run: noraa bootstrap esmf --repo <ufsatm>"
+    )
+
+
+@app.command()
+def bootstrap(
+    repo: str = typer.Option(".", "--repo"),
+    component: str = typer.Argument(...),
+):
+    repo_root = _target_repo(repo)
+    _require_project(repo_root)
+
+    if component != "esmf":
+        raise SystemExit("Only supported bootstrap component is: esmf")
+
+    out = log_dir(repo_root, "bootstrap-esmf")
+    base = repo_root / ".noraa" / "esmf"
+    src = base / "src"
+    inst = base / "install"
+
+    base.mkdir(parents=True, exist_ok=True)
+
+    if not src.exists():
+        run_streamed(
+            ["git", "clone", "--depth", "1", "--branch", "v8.6.1",
+             "https://github.com/esmf-org/esmf.git", str(src)],
+            repo_root, out, None
+        )
+
+    env = os.environ.copy()
+    env.update({
+        "ESMF_DIR": str(inst),
+        "ESMF_INSTALL_PREFIX": str(inst),
+        "ESMF_COMM": "openmpi",
+        "ESMF_COMPILER": "gfortran",
+        "ESMF_BOPT": "O",
+    })
+
+    rc = run_streamed(
+        ["bash", "-lc", "make install"],
+        src, out, env
+    )
+
+    if rc != 0:
+        raise SystemExit("ESMF bootstrap failed")
+
+    print(f"ESMF installed under {inst}")
