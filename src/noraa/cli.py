@@ -151,6 +151,61 @@ def doctor(repo: str = typer.Option(".", "--repo")):
 
 
 @app.command()
+
+def _detect_verify_script(repo_root: Path) -> Path | None:
+    # Common historical locations and likely future locations
+    candidates = [
+        repo_root / "scripts" / "verify_mpas_smoke.sh",
+        repo_root / "scripts" / "verify.sh",
+        repo_root / "ci" / "verify_mpas_smoke.sh",
+        repo_root / "ci" / "verify.sh",
+        repo_root / "tests" / "verify_mpas_smoke.sh",
+        repo_root / "tests" / "verify.sh",
+    ]
+    for p in candidates:
+        if p.exists() and p.is_file():
+            return p
+
+    # Last resort: search shallow for any *verify*.sh or *smoke*.sh
+    try:
+        for p in repo_root.rglob("*.sh"):
+            name = p.name.lower()
+            if ("verify" in name or "smoke" in name) and ".noraa" not in str(p):
+                return p
+    except Exception:
+        pass
+    return None
+
+
+def _cmake_fallback_build(repo_root: Path, out: Path, env: dict[str, str], clean: bool) -> int:
+    build_dir = repo_root / ".noraa" / "build"
+    if clean and build_dir.exists():
+        # Only remove our own build dir
+        import shutil
+        shutil.rmtree(build_dir)
+
+    build_dir.mkdir(parents=True, exist_ok=True)
+
+    # Configure
+    rc = run_streamed(
+        ["cmake", "-S", str(repo_root), "-B", str(build_dir), "-DCMAKE_BUILD_TYPE=Release"],
+        cwd=str(repo_root),
+        out_dir=out,
+        env=env,
+    )
+    if rc != 0:
+        return rc
+
+    # Build MPAS target (common target name in prior builds)
+    rc = run_streamed(
+        ["cmake", "--build", str(build_dir), "--target", "mpas_atmosphere", "-j", str(os.cpu_count() or 4)],
+        cwd=str(repo_root),
+        out_dir=out,
+        env=env,
+    )
+    return rc
+
+
 def verify(
     repo: str = typer.Option(".", "--repo"),
     deps_prefix: str = typer.Option(None, "--deps-prefix"),
