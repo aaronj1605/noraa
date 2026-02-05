@@ -48,6 +48,23 @@ def validate_mpas_success(repo_root: Path, deps_prefix: str | None, out_dir: Pat
     ldd = safe_check_output(["ldd", str(mpas_exe)])
     (out_dir / "ldd_mpas_atmosphere.txt").write_text(ldd)
 
+    def _rp(p: str) -> str:
+        try:
+            return str(Path(p).resolve())
+        except Exception:
+            return p
+
+    mpiexec_real = ""
+    mpi_prefix = ""
+    try:
+        import shutil
+        m = shutil.which("mpiexec") or shutil.which("mpirun")
+        if m:
+            mpiexec_real = _rp(m)
+            mpi_prefix = str(Path(mpiexec_real).resolve().parent.parent)
+    except Exception:
+        pass
+
     # If user provided deps_prefix, we only fail when MPI is clearly coming from system locations.
     if deps_prefix:
         libmpi_path = _extract_ldd_path(ldd, "libmpi.so.40") or _extract_ldd_path(ldd, "libmpi.so")
@@ -65,9 +82,20 @@ def validate_mpas_success(repo_root: Path, deps_prefix: str | None, out_dir: Pat
 
         # If it matches deps_prefix, great.
         # If it is elsewhere (for example a Spack store), accept and record it in the reason.
-        if deps_prefix in libmpi_path:
-            return VerifyResult(True, f"ok (libmpi under deps prefix: {libmpi_path})", mpas_exe)
+        libmpi_real = _rp(libmpi_path)
 
-        return VerifyResult(True, f"ok (libmpi resolved at: {libmpi_path})", mpas_exe)
+        # If it matches deps_prefix (string match) or resolves under it (realpath match), great.
+        # Prefer reporting the canonical mpi_prefix when available.
+        if mpi_prefix and libmpi_real.startswith(mpi_prefix + "/"):
+            r = VerifyResult(True, f"ok (libmpi under mpi_prefix: {libmpi_real})", mpas_exe)
+        elif deps_prefix in libmpi_path or deps_prefix in libmpi_real:
+            r = VerifyResult(True, f"ok (libmpi under deps prefix: {libmpi_path})", mpas_exe)
+        else:
+            r = VerifyResult(True, f"ok (libmpi resolved at: {libmpi_path})", mpas_exe)
+
+        (out_dir / "postcheck.txt").write_text(
+            f"ok={r.ok}\nreason={r.reason}\nlibmpi={libmpi_path}\nlibmpi_real={libmpi_real}\nmpiexec_real={mpiexec_real}\nmpi_prefix={mpi_prefix}\n"
+        )
+        return r
 
     return VerifyResult(True, "ok", mpas_exe)

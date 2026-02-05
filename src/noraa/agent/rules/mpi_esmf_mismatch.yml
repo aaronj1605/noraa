@@ -19,9 +19,11 @@ evidence_commands:
   - "test -f \"{mpas_exe}\" && ldd \"{mpas_exe}\" | grep -E 'libmpi|open-pal|pmix|open-rte' || true"
 fix_steps:
   - "# 1) Ensure you are using the intended MPI wrappers"
+  - "# Detected mpi_prefix from postcheck (if available): {mpi_prefix}"
+  - "# Detected mpiexec_real from postcheck (if available): {mpiexec_real}"
   - "export DEPS_PREFIX=\"{deps_prefix}\""
   - "export PATH=\"$DEPS_PREFIX/bin:$PATH\""
-  - "export LD_LIBRARY_PATH=\"$DEPS_PREFIX/lib:$DEPS_PREFIX/lib64:${LD_LIBRARY_PATH:-}\""
+  - "export LD_LIBRARY_PATH=\"$DEPS_PREFIX/lib:$DEPS_PREFIX/lib64:${{LD_LIBRARY_PATH:-}}\""
   - ""
   - "# 2) Rebuild ESMF against the same MPI stack used by the build"
   - "# Set these paths for your machine:"

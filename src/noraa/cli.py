@@ -103,6 +103,31 @@ def doctor(repo: str = typer.Option(".", "--repo")):
     repo_root = _target_repo(repo)
     _ = _require_project(repo_root)
 
+    # Warn if the target repo has local modifications (excluding .noraa/)
+    try:
+        dirty = safe_check_output(
+            ["git", "status", "--porcelain=v1"],
+            cwd=str(repo_root),
+        )
+        dirty_lines = [
+            ln for ln in dirty.splitlines()
+            if ln.strip() and ln.strip() != "?? .noraa/"
+        ]
+        if dirty_lines:
+            print("\nWARNING: Target repo has local changes. NORAA will not modify tracked files.")
+            print("Review these lines from git status --porcelain:")
+            for ln in dirty_lines[:20]:
+                print("  " + ln)
+            if len(dirty_lines) > 20:
+                print("  ... and " + str(len(dirty_lines) - 20) + " more")
+            print("\nTo restore a clean upstream checkout, you can run:")
+            print("  cd " + str(repo_root))
+            print("  git checkout -- .")
+            print("  git clean -fd")
+    except Exception:
+        pass
+
+
     out = log_dir(repo_root, "doctor")
     env = os.environ.copy()
     write_env_snapshot(out, env)
@@ -189,6 +214,31 @@ def diagnose(
     repo_root = _target_repo(repo)
     _ = _require_project(repo_root)
 
+    # Warn if the target repo has local modifications (excluding .noraa/)
+    try:
+        dirty = safe_check_output(
+            ["git", "status", "--porcelain=v1"],
+            cwd=str(repo_root),
+        )
+        dirty_lines = [
+            ln for ln in dirty.splitlines()
+            if ln.strip() and ln.strip() != "?? .noraa/"
+        ]
+        if dirty_lines:
+            print("\nWARNING: Target repo has local changes. NORAA will not modify tracked files.")
+            print("Review these lines from git status --porcelain:")
+            for ln in dirty_lines[:20]:
+                print("  " + ln)
+            if len(dirty_lines) > 20:
+                print("  ... and " + str(len(dirty_lines) - 20) + " more")
+            print("\nTo restore a clean upstream checkout, you can run:")
+            print("  cd " + str(repo_root))
+            print("  git checkout -- .")
+            print("  git clean -fd")
+    except Exception:
+        pass
+
+
     if log_dir_path:
         ld = Path(log_dir_path).resolve()
     else:
@@ -223,49 +273,171 @@ def diagnose(
 def bootstrap(
     dest: str = typer.Option(str(Path.home() / "work" / "ufsatm"), "--dest"),
     upstream_url: str = typer.Option("https://github.com/NOAA-EMC/ufsatm.git", "--upstream-url"),
+    scan_depth: int = typer.Option(2, "--scan-depth"),
 ):
-    """
-    Create a fresh upstream ufsatm checkout (if needed) and initialize NORAA config under it.
-
-    - If dest does not exist: clone upstream into dest.
-    - If dest exists and is a git repo: do not modify it, just instruct to run noraa init.
-    - After clone/init, prints the next commands for doctor + verify.
-    """
     if which("git") is None:
         raise SystemExit("git not found in PATH. Install git and retry.")
 
     dest_path = Path(dest).expanduser().resolve()
+    search_root = dest_path.parent
 
-    if dest_path.exists():
-        git_dir = dest_path / ".git"
-        if git_dir.exists():
-            print("Destination already exists and looks like a git repo.")
-            print("Run this instead:")
-            print(f"  noraa init --repo {dest_path}")
-            raise SystemExit(0)
+    def is_git_repo(p: Path) -> bool:
+        return (p / ".git").exists()
 
-        print("Destination path already exists but is not a git repo.")
-        print("Choose a different --dest or remove the directory.")
-        raise SystemExit(2)
+    def origin_for(repo: Path) -> str:
+        try:
+            return get_origin_url(repo)
+        except Exception:
+            return ""
 
-    dest_path.parent.mkdir(parents=True, exist_ok=True)
+    def find_repos(root: Path, max_depth: int) -> list[Path]:
+        repos: list[Path] = []
+        if not root.exists():
+            return repos
 
-    print(f"Cloning upstream ufsatm into: {dest_path}")
-    rc = run_streamed(
-        ["git", "clone", upstream_url, str(dest_path)],
-        cwd=dest_path.parent,
-        out_dir=log_dir(dest_path.parent, "bootstrap-clone"),
-        env=os.environ.copy(),
-    )
-    if rc != 0:
-        raise SystemExit(rc)
+        queue: list[tuple[Path, int]] = [(root, 0)]
+        seen: set[Path] = set()
 
-    repo_root = _target_repo(str(dest_path))
-    cfg = ProjectConfig(repo_path=str(repo_root), upstream_url=upstream_url)
-    write_project(repo_root, cfg)
+        while queue:
+            cur, depth = queue.pop(0)
+            if cur in seen:
+                continue
+            seen.add(cur)
 
-    print("Initialized NORAA config:")
-    print(f"  {repo_root / '.noraa' / 'project.toml'}")
+            if is_git_repo(cur):
+                repos.append(cur)
+                continue
+
+            if depth >= max_depth:
+                continue
+
+            try:
+                for child in cur.iterdir():
+                    if child.is_dir():
+                        name = child.name
+                        if name in {".cache", ".venv", "venvs", "__pycache__", ".noraa"}:
+                            continue
+                        queue.append((child, depth + 1))
+            except PermissionError:
+                continue
+
+        return repos
+
+    options: list[tuple[str, str, str]] = []
+    options.append((f"Clone official upstream into {dest_path}", "upstream", str(dest_path)))
+
+    local_repos: list[Path] = []
+    if dest_path.exists() and is_git_repo(dest_path):
+        local_repos.append(dest_path)
+
+    for p in find_repos(search_root, scan_depth):
+        if p == dest_path:
+            continue
+        local_repos.append(p)
+
+    dedup: list[Path] = []
+    seen_repo: set[Path] = set()
+    for p in local_repos:
+        if p not in seen_repo:
+            seen_repo.add(p)
+            dedup.append(p)
+    local_repos = dedup
+
+    for repo in local_repos:
+        origin = origin_for(repo)
+        origin_note = origin if origin else "(origin unknown)"
+        if origin and origin.rstrip("/") == upstream_url.rstrip("/"):
+            tag = "UPSTREAM"
+        elif origin:
+            tag = "FORK"
+        else:
+            tag = "UNKNOWN"
+        options.append((f"Use local repo: {repo}  [{tag}] [{origin_note}]", "local", str(repo)))
+
+    print("\nSelect which ufsatm repo to use:")
+    print(f"  Official upstream is: {upstream_url}\n")
+    for i, (label, _, _) in enumerate(options, start=1):
+        print(f"  {i}) {label}")
+
+    choice_str = typer.prompt("Enter selection number", default="1")
+    try:
+        choice = int(choice_str)
+    except ValueError:
+        raise SystemExit("Invalid selection. Must be a number.")
+
+    if choice < 1 or choice > len(options):
+        raise SystemExit("Invalid selection number.")
+
+    label, kind, value = options[choice - 1]
+
+    if kind == "upstream":
+        if dest_path.exists():
+            print(f"\nDestination already exists: {dest_path}")
+            print("Refusing to clone on top of an existing directory.")
+            print("Pick a different --dest or choose a local repo option.")
+            raise SystemExit(2)
+
+        dest_path.parent.mkdir(parents=True, exist_ok=True)
+
+        print(f"\nCloning upstream into: {dest_path}")
+        out_dir = log_dir(dest_path.parent, "bootstrap-clone")
+        rc = run_streamed(
+            ["git", "clone", upstream_url, str(dest_path)],
+            cwd=dest_path.parent,
+            out_dir=out_dir,
+            env=os.environ.copy(),
+        )
+        if rc != 0:
+            print(f"Clone failed. Logs: {out_dir}")
+            raise SystemExit(rc)
+
+        repo_root = _target_repo(str(dest_path))
+        cfg = ProjectConfig(repo_path=str(repo_root), upstream_url=upstream_url)
+        write_project(repo_root, cfg)
+
+        print("\nInitialized NORAA config:")
+        print(f"  {repo_root / '.noraa' / 'project.toml'}")
+        print("\nNext steps:")
+        print(f"  noraa doctor --repo {repo_root}")
+        print(
+            f"  noraa verify --repo {repo_root} \\\n"
+            "    --deps-prefix /path/to/deps \\\n"
+            '    --esmf-mkfile "/path/to/esmf.mk"\n'
+        )
+        return
+
+    repo_root = _target_repo(value)
+    origin = origin_for(repo_root)
+
+    print(f"\nSelected local repo: {repo_root}")
+    if origin:
+        print(f"Origin: {origin}")
+    else:
+        print("Origin: (unknown)")
+
+    print(f"\nOfficial upstream is: {upstream_url}")
+    if origin and origin.rstrip("/") != upstream_url.rstrip("/"):
+        use_upstream_anyway = typer.confirm(
+            "This repo origin does not match upstream. Use it anyway (treat as fork)?",
+            default=False,
+        )
+        if not use_upstream_anyway:
+            print("\nYou chose not to use this repo.")
+            print("Re-run bootstrap and select option 1 to clone upstream, or pick a different local repo.")
+            raise SystemExit(2)
+
+    existing = load_project(repo_root)
+    if existing is None:
+        cfg = ProjectConfig(repo_path=str(repo_root), upstream_url=upstream_url)
+        if origin and origin.rstrip("/") != upstream_url.rstrip("/"):
+            cfg.allow_fork = True
+            cfg.fork_url = origin
+        p = write_project(repo_root, cfg)
+        print(f"\nWrote {p}")
+    else:
+        print("\nProject file already exists:")
+        print(f"  {repo_root / '.noraa' / 'project.toml'}")
+
     print("\nNext steps:")
     print(f"  noraa doctor --repo {repo_root}")
     print(

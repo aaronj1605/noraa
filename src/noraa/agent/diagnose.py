@@ -78,10 +78,20 @@ def diagnose_log(
         "deps_prefix": deps_prefix or "<set DEPS_PREFIX>",
         "repo_root": str(repo_root),
         "mpas_exe": str(mpas_exe),
+        "mpi_prefix": "",
+        "mpiexec_real": "",
         "esmf_src": "<path to ESMF source>",
         "esmf_install_prefix": "<path to ESMF install prefix>",
         "esmf_mkfile": esmf_mkfile or "<path to esmf.mk>",
     }
+
+    # Optional: enrich substitutions from postcheck.txt if present
+    postcheck = log_dir / "postcheck.txt"
+    if postcheck.exists():
+        for ln in postcheck.read_text().splitlines():
+            if "=" in ln:
+                k, v = ln.split("=", 1)
+                substitutions[k.strip()] = v.strip()
 
     def fmt(line: str) -> str:
         return line.format(**substitutions)

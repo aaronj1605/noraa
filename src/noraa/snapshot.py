@@ -30,6 +30,16 @@ def write_tool_snapshot(out_dir: Path, env: dict[str, str]) -> None:
         "mpiexec": which("mpiexec", "mpirun"),
     }
     lines = []
+
+    # Realpaths for MPI wrappers (helps detect symlink overlays)
+    mpiexec_real = ""
+    mpi_prefix = ""
+    try:
+        if tools.get("mpiexec"):
+            mpiexec_real = str(Path(tools["mpiexec"]).resolve())
+            mpi_prefix = str(Path(mpiexec_real).parent.parent)
+    except Exception:
+        pass
     ok = True
     for k, v in tools.items():
         if v:
@@ -38,7 +48,13 @@ def write_tool_snapshot(out_dir: Path, env: dict[str, str]) -> None:
             ok = False
             lines.append(f"[missing] {k}")
 
+    if mpiexec_real:
+        lines.append(f"[info] mpiexec_real: {mpiexec_real}")
+    if mpi_prefix:
+        lines.append(f"[info] mpi_prefix: {mpi_prefix}")
+
     (out_dir / "tools.txt").write_text("\n".join(lines) + "\n")
+    (out_dir / "mpi_prefix.txt").write_text(f"mpiexec={tools.get("mpiexec","")}\nmpiexec_real={mpiexec_real}\nmpi_prefix={mpi_prefix}\n")
     (out_dir / "mpiexec_version.txt").write_text(safe_check_output(["mpiexec", "--version"], env=env))
     (out_dir / "mpicc_show.txt").write_text(safe_check_output(["mpicc", "-show"], env=env))
     (out_dir / "mpifort_show.txt").write_text(safe_check_output(["mpifort", "-show"], env=env))
