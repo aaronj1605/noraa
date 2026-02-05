@@ -2,7 +2,6 @@ from __future__ import annotations
 
 from pathlib import Path
 import os
-from shutil import which
 import typer
 
 from .util import git_root, log_dir, run_streamed, safe_check_output
@@ -103,6 +102,65 @@ def _detect_verify_script(repo_root: Path) -> Path | None:
     return None
 
 
+def _pick_mpas_suite(repo_root: Path) -> str:
+    suites_dir = repo_root / "ccpp" / "suites"
+    if not suites_dir.exists():
+        raise SystemExit(f"Missing ccpp/suites under {repo_root}")
+
+    # Prefer the suite you already confirmed exists on develop
+    preferred = suites_dir / "suite_MPAS_RRFS.xml"
+    if preferred.exists():
+        return preferred.stem  # suite_MPAS_RRFS
+
+    # Otherwise, pick the first MPAS suite present
+    mpas = sorted(suites_dir.glob("suite_MPAS*.xml"))
+    if mpas:
+        return mpas[0].stem
+
+    raise SystemExit(
+        "No MPAS suite XML found under ccpp/suites. "
+        "Expected something like suite_MPAS_RRFS.xml."
+    )
+
+
+def _cmake_fallback_mpas(repo_root: Path, out: Path, env: dict[str, str], clean: bool) -> int:
+    build_dir = repo_root / ".noraa" / "build"
+    if clean and build_dir.exists():
+        safe_check_output(["bash", "-lc", "rm -rf .noraa/build"], cwd=repo_root, env=env)
+
+    suite = _pick_mpas_suite(repo_root)
+
+    esmf_mk = _detect_esmf_mkfile(repo_root, env)
+    if esmf_mk:
+        env = env.copy()
+        env["ESMFMKFILE"] = esmf_mk
+        (out / "esmf_detected.txt").write_text(esmf_mk + "\n")
+    else:
+        (out / "esmf_detected.txt").write_text("NOT FOUND\n")
+
+    configure = [
+        "cmake",
+        "-S", str(repo_root),
+        "-B", str(build_dir),
+        "-DMPAS=ON",
+        "-DFV3=OFF",
+        f"-DCCPP_SUITES={suite}",
+    ]
+
+    jobs = str(max(1, (os.cpu_count() or 1)))
+    build = ["cmake", "--build", str(build_dir), "-j", jobs]
+
+    (out / "command.txt").write_text(
+        "CONFIGURE:\n" + " ".join(configure) + "\n\nBUILD:\n" + " ".join(build) + "\n"
+    )
+
+    rc1 = run_streamed(configure, repo_root, out, env)
+    if rc1 != 0:
+        return rc1
+    rc2 = run_streamed(build, repo_root, out, env)
+    return rc2
+
+
 @app.command()
 def verify(
     repo: str = typer.Option(".", "--repo"),
@@ -122,17 +180,16 @@ def verify(
     script = Path(cfg.verify_script) if cfg.verify_script else None
     if not script or not script.exists():
         detected = _detect_verify_script(repo_root)
-        if not detected:
-            raise SystemExit(
-                "No verify script found in this ufsatm checkout. "
-                "NORAA does not run CMake fallback."
-            )
-        script = detected
+        if detected:
+            script = detected
 
-    if clean:
-        safe_check_output(["bash", "-lc", "rm -rf .noraa/build"], cwd=repo_root, env=env)
+    if script and script.exists():
+        if clean:
+            safe_check_output(["bash", "-lc", "rm -rf .noraa/build"], cwd=repo_root, env=env)
+        rc = run_streamed(["bash", str(script)], repo_root, out, env)
+    else:
+        rc = _cmake_fallback_mpas(repo_root, out, env, clean)
 
-    rc = run_streamed(["bash", str(script)], repo_root, out, env)
     (out / "exit_code.txt").write_text(f"{rc}\n")
 
     v = validate_mpas_success(repo_root, deps_prefix, out)
