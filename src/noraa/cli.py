@@ -223,7 +223,21 @@ def verify(
 
     script = repo_root / cfg.verify_script
     if not script.exists():
-        raise SystemExit(f"Missing verify script: {script}")
+        detected = _detect_verify_script(repo_root)
+        if detected:
+            print(f"Using detected verify script: {detected}")
+            script = detected
+        else:
+            print("No verify script found in target repo. Falling back to CMake build under .noraa/build")
+            rc = _cmake_fallback_build(repo_root, out, env, clean=clean)
+            (out / "exit_code.txt").write_text(f"{rc}\n")
+            v = validate_mpas_success(repo_root, deps_prefix, out)
+            (out / "postcheck.txt").write_text(f"ok={v.ok}\nreason={v.reason}\n")
+            if rc != 0 or not v.ok:
+                print(f"VERIFY FAILED. Logs: {out}")
+                raise SystemExit(rc if rc != 0 else 2)
+            print(f"VERIFY PASSED. Logs: {out}")
+            return
 
     if clean:
         safe_check_output(["bash", "-lc", "rm -rf .noraa/build"], cwd=repo_root, env=env)
