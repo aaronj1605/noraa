@@ -42,7 +42,9 @@ def run_streamed(cmd: list[str], cwd: Path, out_dir: Path, env: dict[str, str]) 
       - writing stdout to stdout.txt and stderr to stderr.txt
       - also printing to the terminal so it does not look frozen
     """
-    (out_dir / "command.txt").write_text(" ".join(cmd) + "\n")
+    cmd_path = out_dir / "command.txt"
+    with cmd_path.open("a") as cf:
+        cf.write(" ".join(cmd) + "\n")
 
     stdout_path = out_dir / "stdout.txt"
     stderr_path = out_dir / "stderr.txt"

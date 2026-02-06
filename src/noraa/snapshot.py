@@ -54,7 +54,11 @@ def write_tool_snapshot(out_dir: Path, env: dict[str, str]) -> None:
         lines.append(f"[info] mpi_prefix: {mpi_prefix}")
 
     (out_dir / "tools.txt").write_text("\n".join(lines) + "\n")
-    (out_dir / "mpi_prefix.txt").write_text(f"mpiexec={tools.get("mpiexec","")}\nmpiexec_real={mpiexec_real}\nmpi_prefix={mpi_prefix}\n")
+    (out_dir / "mpi_prefix.txt").write_text(
+        f"mpiexec={tools.get('mpiexec', '')}\n"
+        f"mpiexec_real={mpiexec_real}\n"
+        f"mpi_prefix={mpi_prefix}\n"
+    )
     (out_dir / "mpiexec_version.txt").write_text(safe_check_output(["mpiexec", "--version"], env=env))
     (out_dir / "mpicc_show.txt").write_text(safe_check_output(["mpicc", "-show"], env=env))
     (out_dir / "mpifort_show.txt").write_text(safe_check_output(["mpifort", "-show"], env=env))
