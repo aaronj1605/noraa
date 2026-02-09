@@ -176,7 +176,7 @@ def _cmake_fallback_mpas(
 
     # Build through a NORAA-owned wrapper top-level project to ensure C/CXX/
     # Fortran language state is initialized before upstream subdirs run.
-    wrapper_src = out / "wrapper-src"
+    wrapper_src = repo_root / ".noraa" / "wrapper-src"
     wrapper_src.mkdir(parents=True, exist_ok=True)
     (wrapper_src / "CMakeLists.txt").write_text(
         "cmake_minimum_required(VERSION 3.19)\n"
@@ -323,6 +323,17 @@ def _cmake_fallback_mpas(
 
     if module_paths:
         configure.append(f"-DCMAKE_MODULE_PATH={';'.join(module_paths)}")
+
+    # Migrate old caches that were generated from a different wrapper source.
+    # This keeps --no-clean stable across NORAA upgrades.
+    cache_file = build_dir / "CMakeCache.txt"
+    if cache_file.exists():
+        cache_text = cache_file.read_text(encoding="utf-8", errors="ignore")
+        expected_home = f"CMAKE_HOME_DIRECTORY:INTERNAL={wrapper_src.resolve()}"
+        if expected_home not in cache_text:
+            safe_check_output(
+                ["bash", "-lc", "rm -rf .noraa/build"], cwd=repo_root, env=env
+            )
 
     # Deterministic order avoids intermittent Fortran module races in MPAS build.
     build = ["cmake", "--build", str(build_dir), "-j", "1"]
@@ -480,10 +491,7 @@ def verify(
         )
         (out / "diagnosis.txt").write_text(msg)
         print(msg, end="")
-        print(
-            f"\nNext step: noraa diagnose --repo {repo_root} --log-dir {out}",
-            end="",
-        )
+        print(f"\nNext step: noraa diagnose --repo {repo_root} --log-dir {out}")
         raise SystemExit(code)
 
     print(f"VERIFY PASSED. Logs: {out}")
