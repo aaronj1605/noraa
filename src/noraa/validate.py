@@ -65,7 +65,9 @@ def validate_mpas_success(repo_root: Path, deps_prefix: str | None, out_dir: Pat
     except Exception:
         pass
 
-    # If user provided deps_prefix, we only fail when MPI is clearly coming from system locations.
+    # If user provided deps_prefix, validate that MPI is resolvable at runtime.
+    # Do not fail just because MPI comes from system paths; many Linux setups
+    # intentionally use distro OpenMPI packages.
     if deps_prefix:
         libmpi_path = _extract_ldd_path(ldd, "libmpi.so.40") or _extract_ldd_path(ldd, "libmpi.so")
         if libmpi_path is None:
@@ -76,11 +78,7 @@ def validate_mpas_success(repo_root: Path, deps_prefix: str | None, out_dir: Pat
             # Handles "=> not found" in a crude but safe way
             return VerifyResult(False, "libmpi not found in ldd output", mpas_exe)
 
-        # If it is obviously from system locations, fail.
-        if _is_system_path(libmpi_path):
-            return VerifyResult(False, f"libmpi resolved from system path: {libmpi_path}", mpas_exe)
-
-        # If it matches deps_prefix, great.
+        # Accept any concrete resolvable path, including system lib locations.
         # If it is elsewhere (for example a Spack store), accept and record it in the reason.
         libmpi_real = _rp(libmpi_path)
 
@@ -90,6 +88,8 @@ def validate_mpas_success(repo_root: Path, deps_prefix: str | None, out_dir: Pat
             r = VerifyResult(True, f"ok (libmpi under mpi_prefix: {libmpi_real})", mpas_exe)
         elif deps_prefix in libmpi_path or deps_prefix in libmpi_real:
             r = VerifyResult(True, f"ok (libmpi under deps prefix: {libmpi_path})", mpas_exe)
+        elif _is_system_path(libmpi_path):
+            r = VerifyResult(True, f"ok (libmpi resolved from system path: {libmpi_path})", mpas_exe)
         else:
             r = VerifyResult(True, f"ok (libmpi resolved at: {libmpi_path})", mpas_exe)
 
