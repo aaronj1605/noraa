@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from pathlib import Path
 import os
+import sys
 import typer
 
 from .util import git_root, log_dir, run_streamed, safe_check_output
@@ -194,6 +195,10 @@ def _cmake_fallback_mpas(
         "-DFV3=OFF",
         f"-DCCPP_SUITES={suite}",
     ]
+    # Upstream CCPP CMake expects Python_EXECUTABLE for ccpp_prebuild.py.
+    # On fresh clones this is often unset, which causes configure failure.
+    configure.append(f"-DPython_EXECUTABLE={sys.executable}")
+    configure.append(f"-DPython3_EXECUTABLE={sys.executable}")
 
     module_paths: list[str] = []
     mpas_modules = repo_root / "mpas" / "MPAS-Model" / "cmake" / "Modules"
