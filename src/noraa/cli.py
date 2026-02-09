@@ -20,6 +20,20 @@ from .project import (
 app = typer.Typer(add_completion=False)
 
 
+def _repo_cmd(repo_root: Path, *parts: str) -> str:
+    tokens = ["noraa", *parts, "--repo", str(repo_root)]
+    return " ".join(tokens)
+
+
+def _fail(message: str, *, next_step: str | None = None, logs: Path | None = None) -> None:
+    lines = [message]
+    if logs is not None:
+        lines.append(f"Logs: {logs}")
+    if next_step:
+        lines.append(f"Next step: {next_step}")
+    raise SystemExit("\n".join(lines))
+
+
 def _target_repo(path: str) -> Path:
     return git_root(Path(path).resolve())
 
@@ -51,9 +65,9 @@ def _build_env(deps_prefix: str | None, esmf_mkfile: str | None) -> dict[str, st
 def _require_project(repo_root: Path) -> ProjectConfig:
     cfg = load_project(repo_root)
     if cfg is None:
-        raise SystemExit(
-            "Missing .noraa/project.toml under the target repo.\n"
-            f"Run: noraa init --repo {repo_root}"
+        _fail(
+            "Missing .noraa/project.toml under the target repo.",
+            next_step=_repo_cmd(repo_root, "init"),
         )
     ok, msg = validate_repo_origin(repo_root, cfg)
     if not ok:
@@ -123,7 +137,10 @@ def _pick_mpas_suite(repo_root: Path) -> str:
     """Discover a valid MPAS CCPP suite, preferring suite_MPAS_RRFS.xml."""
     suites_dir = repo_root / "ccpp" / "suites"
     if not suites_dir.exists():
-        raise SystemExit(f"Missing ccpp/suites under {repo_root}")
+        _fail(
+            f"Missing ccpp/suites under {repo_root}",
+            next_step=_repo_cmd(repo_root, "verify"),
+        )
 
     preferred = suites_dir / "suite_MPAS_RRFS.xml"
     if preferred.exists():
@@ -133,9 +150,10 @@ def _pick_mpas_suite(repo_root: Path) -> str:
     if mpas:
         return mpas[0].stem
 
-    raise SystemExit(
+    _fail(
         "No MPAS suite XML found under ccpp/suites. "
-        "Expected something like suite_MPAS_RRFS.xml."
+        "Expected something like suite_MPAS_RRFS.xml.",
+        next_step=_repo_cmd(repo_root, "verify"),
     )
 
 
@@ -396,9 +414,9 @@ def _resolve_esmf_mkfile(
         if candidate.exists():
             return str(candidate)
 
-    raise SystemExit(
-        "ESMF not found. Run: noraa bootstrap esmf --repo <ufsatm>\n"
-        "or provide --esmf-mkfile / --deps-prefix"
+    _fail(
+        "ESMF not found under .noraa/esmf/install and no valid --esmf-mkfile was provided.",
+        next_step=_repo_cmd(repo_root, "bootstrap", "esmf"),
     )
 
 
@@ -462,6 +480,10 @@ def verify(
         )
         (out / "diagnosis.txt").write_text(msg)
         print(msg, end="")
+        print(
+            f"\nNext step: noraa diagnose --repo {repo_root} --log-dir {out}",
+            end="",
+        )
         raise SystemExit(code)
 
     print(f"VERIFY PASSED. Logs: {out}")
@@ -510,7 +532,11 @@ def bootstrap(
                 src,
             )
             if rc_clone != 0:
-                raise SystemExit("ESMF bootstrap failed during git clone")
+                _fail(
+                    "ESMF bootstrap failed during git clone.",
+                    logs=out,
+                    next_step=_repo_cmd(repo_root, "bootstrap", "esmf"),
+                )
 
         build_env = env.copy()
         build_env.setdefault("ESMF_COMM", "openmpi")
@@ -523,17 +549,27 @@ def bootstrap(
         rc_build = run_streamed(["make", "-j", jobs], src, out, build_env)
         if rc_build != 0:
             (out / "exit_code.txt").write_text(f"{rc_build}\n")
-            raise SystemExit("ESMF bootstrap failed during build")
+            _fail(
+                "ESMF bootstrap failed during build.",
+                logs=out,
+                next_step=_repo_cmd(repo_root, "bootstrap", "esmf"),
+            )
 
         rc_install = run_streamed(["make", "install"], src, out, build_env)
         (out / "exit_code.txt").write_text(f"{rc_install}\n")
         if rc_install != 0:
-            raise SystemExit("ESMF bootstrap failed during install")
+            _fail(
+                "ESMF bootstrap failed during install.",
+                logs=out,
+                next_step=_repo_cmd(repo_root, "bootstrap", "esmf"),
+            )
 
         mk = _bootstrapped_esmf_mk(repo_root)
         if not mk:
-            raise SystemExit(
-                "ESMF build completed but esmf.mk was not found under .noraa/esmf/install"
+            _fail(
+                "ESMF build completed but esmf.mk was not found under .noraa/esmf/install.",
+                logs=out,
+                next_step=_repo_cmd(repo_root, "bootstrap", "esmf"),
             )
 
         (out / "esmf_mkfile.txt").write_text(str(mk) + "\n")
@@ -582,7 +618,11 @@ def bootstrap(
                 rc = _clone_with_retries(repo_root, out, build_env, url, tag, src)
                 if rc != 0:
                     (out / "exit_code.txt").write_text("1\n")
-                    raise SystemExit(f"Dependency bootstrap failed while cloning {name}")
+                    _fail(
+                        f"Dependency bootstrap failed while cloning {name}.",
+                        logs=out,
+                        next_step=_repo_cmd(repo_root, "bootstrap", "deps"),
+                    )
 
             extra = [
                 f"-DCMAKE_INSTALL_PREFIX={inst}",
@@ -616,7 +656,11 @@ def bootstrap(
             )
             if rc_cfg != 0:
                 (out / "exit_code.txt").write_text(f"{rc_cfg}\n")
-                raise SystemExit(f"Dependency bootstrap failed while configuring {name}")
+                _fail(
+                    f"Dependency bootstrap failed while configuring {name}.",
+                    logs=out,
+                    next_step=_repo_cmd(repo_root, "bootstrap", "deps"),
+                )
 
             rc_build = run_streamed(
                 ["cmake", "--build", str(bld), "-j", jobs],
@@ -626,12 +670,20 @@ def bootstrap(
             )
             if rc_build != 0:
                 (out / "exit_code.txt").write_text(f"{rc_build}\n")
-                raise SystemExit(f"Dependency bootstrap failed while building {name}")
+                _fail(
+                    f"Dependency bootstrap failed while building {name}.",
+                    logs=out,
+                    next_step=_repo_cmd(repo_root, "bootstrap", "deps"),
+                )
 
             rc_install = run_streamed(["cmake", "--install", str(bld)], repo_root, out, build_env)
             if rc_install != 0:
                 (out / "exit_code.txt").write_text(f"{rc_install}\n")
-                raise SystemExit(f"Dependency bootstrap failed while installing {name}")
+                _fail(
+                    f"Dependency bootstrap failed while installing {name}.",
+                    logs=out,
+                    next_step=_repo_cmd(repo_root, "bootstrap", "deps"),
+                )
 
         required = [
             inst / "lib" / "cmake" / "bacio" / "bacio-config.cmake",
@@ -650,14 +702,21 @@ def bootstrap(
         if missing:
             (out / "exit_code.txt").write_text("1\n")
             (out / "missing_deps.txt").write_text("\n".join(missing) + "\n")
-            raise SystemExit("Dependency bootstrap completed with missing package config files")
+            _fail(
+                "Dependency bootstrap completed with missing package config files.",
+                logs=out,
+                next_step=_repo_cmd(repo_root, "bootstrap", "deps"),
+            )
 
         (out / "exit_code.txt").write_text("0\n")
         (out / "deps_prefix.txt").write_text(str(inst) + "\n")
         print(f"Dependencies installed under {inst}")
         return
 
-    raise SystemExit("Supported bootstrap components are: esmf, deps")
+    _fail(
+        f"Unsupported bootstrap component: {component}",
+        next_step=f"{_repo_cmd(repo_root, 'bootstrap', 'deps')}  or  {_repo_cmd(repo_root, 'bootstrap', 'esmf')}",
+    )
 
 
 @app.command()
@@ -682,12 +741,18 @@ def diagnose(
     else:
         logs_root = repo_root / ".noraa" / "logs"
         if not logs_root.exists():
-            raise SystemExit("No .noraa/logs directory found to diagnose.")
+            _fail(
+                "No .noraa/logs directory found to diagnose.",
+                next_step=_repo_cmd(repo_root, "verify"),
+            )
         candidates = sorted(
             p for p in logs_root.iterdir() if p.is_dir() and p.name.endswith("-verify")
         )
         if not candidates:
-            raise SystemExit("No verify logs found under .noraa/logs to diagnose.")
+            _fail(
+                "No verify logs found under .noraa/logs to diagnose.",
+                next_step=_repo_cmd(repo_root, "verify"),
+            )
         log_dir_path = candidates[-1]
 
     code, msg, rule_id, script_text = diagnose_log(
