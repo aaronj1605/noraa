@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import os
+import subprocess
 import sys
 from pathlib import Path
 
@@ -110,18 +111,25 @@ def verify(
     """
     repo_root = _target_repo(repo)
     cfg = _require_project(repo_root)
+    resolved_deps = resolve_deps_prefix(repo_root, deps_prefix)
+    script = Path(cfg.verify_script) if cfg.verify_script else None
+    if not script or not script.exists():
+        script = detect_verify_script(repo_root)
+    preflight = _verify_preflight_failure(
+        repo_root,
+        deps_prefix=resolved_deps,
+        using_verify_script=bool(script and script.exists()),
+    )
+    if preflight:
+        msg, next_step = preflight
+        fail(msg, next_step=next_step)
     out = log_dir(repo_root, "verify")
 
-    resolved_deps = resolve_deps_prefix(repo_root, deps_prefix)
     resolved_esmf = resolve_esmf_mkfile(repo_root, resolved_deps, esmf_mkfile)
     env = build_env(resolved_deps, resolved_esmf)
 
     write_env_snapshot(out, env)
     write_tool_snapshot(out, env)
-
-    script = Path(cfg.verify_script) if cfg.verify_script else None
-    if not script or not script.exists():
-        script = detect_verify_script(repo_root)
 
     if script and script.exists():
         if clean:
@@ -231,10 +239,75 @@ def diagnose(
     raise SystemExit(code)
 
 
+def _cmake_version() -> tuple[int, int, int] | None:
+    try:
+        out = subprocess.check_output(["cmake", "--version"], text=True)
+    except Exception:
+        return None
+    first = out.splitlines()[0] if out else ""
+    marker = "version "
+    if marker not in first:
+        return None
+    v = first.split(marker, 1)[1].strip().split()[0]
+    parts = v.split(".")
+    if len(parts) < 2:
+        return None
+    major = int(parts[0])
+    minor = int(parts[1])
+    patch = int(parts[2]) if len(parts) > 2 and parts[2].isdigit() else 0
+    return (major, minor, patch)
+
+
+def _verify_preflight_failure(
+    repo_root: Path, *, deps_prefix: str | None, using_verify_script: bool
+) -> tuple[str, str] | None:
+    ccpp_prebuild = repo_root / "ccpp" / "framework" / "scripts" / "ccpp_prebuild.py"
+    if not ccpp_prebuild.exists():
+        return (
+            f"Required CCPP submodule content is missing: {ccpp_prebuild}",
+            "git submodule update --init --recursive",
+        )
+
+    if using_verify_script:
+        return None
+
+    deps_root = Path(deps_prefix) if deps_prefix else repo_root / ".noraa" / "deps" / "install"
+    if not deps_root.exists():
+        return (
+            f"MPAS dependency bundle not found: {deps_root}",
+            repo_cmd(repo_root, "bootstrap", "deps"),
+        )
+
+    version = _cmake_version()
+    if version is None:
+        return (
+            "CMake is required for verify fallback but was not found in PATH.",
+            "pip install -U 'cmake>=3.28'",
+        )
+    if version < (3, 28, 0):
+        return (
+            f"CMake >= 3.28 is required for verify fallback (found {version[0]}.{version[1]}.{version[2]}).",
+            "pip install -U 'cmake>=3.28'",
+        )
+    return None
+
+
+def _python_runtime_error() -> str | None:
+    if sys.version_info >= (3, 11):
+        return None
+    return (
+        "Python 3.11+ is required for noraa. "
+        "On Ubuntu 22.04, install python3.11 and python3.11-venv, "
+        "recreate your virtual environment, and reinstall noraa."
+    )
+
+
 def main():
+    err = _python_runtime_error()
+    if err:
+        raise SystemExit(err)
     app()
 
 
 if __name__ == "__main__":
     main()
-
