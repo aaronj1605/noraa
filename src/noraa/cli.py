@@ -132,8 +132,8 @@ def verify(
         using_verify_script=bool(script and script.exists()),
     )
     if preflight:
-        msg, next_step = preflight
-        fail(msg, next_step=next_step)
+        msg, action = preflight
+        raise SystemExit(_format_preflight_failure(msg, action))
     out = log_dir(repo_root, "verify")
 
     resolved_esmf = resolve_esmf_mkfile(repo_root, resolved_deps, esmf_mkfile)
@@ -279,7 +279,7 @@ def _verify_preflight_failure(
     ccpp_prebuild = repo_root / "ccpp" / "framework" / "scripts" / "ccpp_prebuild.py"
     if not ccpp_prebuild.exists():
         return (
-            f"Required CCPP submodule content is missing: {ccpp_prebuild}",
+            f"Issue identified: Required CCPP submodule content is missing: {ccpp_prebuild}",
             "git submodule update --init --recursive",
         )
 
@@ -301,22 +301,26 @@ def _verify_preflight_failure(
     deps_root = Path(deps_prefix) if deps_prefix else repo_root / ".noraa" / "deps" / "install"
     if not deps_root.exists():
         return (
-            f"MPAS dependency bundle not found: {deps_root}",
+            f"Issue identified: MPAS dependency bundle not found: {deps_root}",
             repo_cmd(repo_root, "bootstrap", "deps"),
         )
 
     version = _cmake_version()
     if version is None:
         return (
-            "CMake is required for verify fallback but was not found in PATH.",
+            "Issue identified: CMake is required for verify fallback but was not found in PATH.",
             "pip install -U 'cmake>=3.28'",
         )
     if version < (3, 28, 0):
         return (
-            f"CMake >= 3.28 is required for verify fallback (found {version[0]}.{version[1]}.{version[2]}).",
+            f"Issue identified: CMake >= 3.28 is required for verify fallback (found {version[0]}.{version[1]}.{version[2]}).",
             "pip install -U 'cmake>=3.28'",
         )
     return None
+
+
+def _format_preflight_failure(issue: str, action: str) -> str:
+    return f"{issue}\nAction required: {action}"
 
 
 def _python_runtime_error() -> str | None:

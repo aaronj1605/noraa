@@ -90,3 +90,11 @@ def test_verify_preflight_detects_missing_esmf(tmp_path: Path, monkeypatch) -> N
     msg, next_step = result
     assert msg.startswith("Issue identified: ESMF not found")
     assert next_step.startswith("noraa bootstrap esmf --repo")
+
+def test_format_preflight_failure_includes_action_required() -> None:
+    text = cli._format_preflight_failure(
+        "Issue identified: ESMF not found",
+        "noraa bootstrap esmf --repo /tmp/ufsatm",
+    )
+    assert text.splitlines()[0] == "Issue identified: ESMF not found"
+    assert text.splitlines()[1] == "Action required: noraa bootstrap esmf --repo /tmp/ufsatm"
