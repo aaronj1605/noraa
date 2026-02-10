@@ -66,11 +66,11 @@ noraa verify
 
 ## Command Purpose
 
-- `noraa init`: creates `.noraa/project.toml` in target repo.
-- `noraa verify --preflight-only`: reports blocking issues and actions before build.
-- `noraa bootstrap esmf`: builds ESMF into `.noraa/esmf/install`.
-- `noraa bootstrap deps`: builds MPAS/UFS deps into `.noraa/deps/install`.
-- `noraa verify`: runs MPAS-only verify build (`MPAS=ON`, `FV3=OFF`).
+- noraa init: create .noraa/project.toml for this ufsatm checkout so NORAA can track repo-local state, logs, and artifacts. Run once per clone.
+- noraa verify --preflight-only: run fast blockers-only checks before a full build. It reports what is missing and the exact next command to run.
+- noraa bootstrap esmf: build ESMF into .noraa/esmf/install so MPAS and UFS can find ESMF without requiring a system-wide install.
+- noraa bootstrap deps: build MPAS and UFS support libraries into .noraa/deps/install so CMake can resolve required packages during verify.
+- noraa verify: run the MPAS-only configure and build validation (MPAS=ON, FV3=OFF) and write detailed logs under .noraa/logs/.... Treat this as the main pass/fail build check.
 
 ## Logs and Artifacts
 
@@ -87,4 +87,4 @@ NORAA writes outputs under target repo `.noraa/`:
 This project is released under the MIT License. See LICENSE.
 
 Attribution request:
-If you use this project in research, teaching, demos, derivative tools, or redistributed builds, please provide visible credit to this repository.
+If you use this project in research, teaching, demos, derivative tools, or redistributed builds, please provide visible credit to NORAA and link this repository.
