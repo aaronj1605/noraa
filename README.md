@@ -87,4 +87,4 @@ NORAA writes outputs under target repo `.noraa/`:
 This project is released under the MIT License. See LICENSE.
 
 Attribution request:
-If you use this project in research, teaching, demos, derivative tools, or redistributed builds, please provide visible credit to Aaron Jones and link back to this repository.
+If you use this project in research, teaching, demos, derivative tools, or redistributed builds, please provide visible credit to this repository.
