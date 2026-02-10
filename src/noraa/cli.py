@@ -29,7 +29,9 @@ from .snapshot import write_env_snapshot, write_tool_snapshot
 from .util import git_root, log_dir, run_streamed, safe_check_output
 from .validate import validate_mpas_success
 
-app = typer.Typer(add_completion=False)
+BASELINE_HELP = "Tested baseline: Linux (Ubuntu 22.04/24.04), Python 3.11+, upstream ufsatm develop.\nUse: noraa <command> --help for command details."
+
+app = typer.Typer(add_completion=False, help=BASELINE_HELP)
 
 
 def _target_repo(path: str) -> Path:
