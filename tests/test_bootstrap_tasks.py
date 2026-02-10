@@ -28,3 +28,18 @@ def test_bootstrap_esmf_prints_next_steps(tmp_path: Path, monkeypatch, capsys) -
     text = capsys.readouterr().out
     assert "Next step: noraa bootstrap deps --repo" in text
     assert "Then run: noraa verify --repo" in text
+
+
+def test_deps_preflight_reports_missing_pnetcdf_config(tmp_path: Path, monkeypatch) -> None:
+    monkeypatch.setattr(tasks.shutil, "which", lambda *_args, **_kwargs: None)
+    result = tasks._deps_preflight_failure(tmp_path, {"PATH": ""})
+    assert result is not None
+    msg, next_step = result
+    assert "pnetcdf-config" in msg
+    assert "sudo apt install -y pnetcdf-bin" == next_step
+
+
+def test_deps_preflight_ok_when_pnetcdf_config_present(tmp_path: Path, monkeypatch) -> None:
+    monkeypatch.setattr(tasks.shutil, "which", lambda *_args, **_kwargs: "/usr/bin/pnetcdf-config")
+    assert tasks._deps_preflight_failure(tmp_path, {"PATH": "/usr/bin"}) is None
+PY

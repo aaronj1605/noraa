@@ -1,12 +1,13 @@
 from __future__ import annotations
 
 import os
+import shutil
 from pathlib import Path
 
+from ..buildsystem.paths import bootstrapped_esmf_mk
 from ..messages import fail, repo_cmd
 from ..snapshot import write_env_snapshot, write_tool_snapshot
 from ..util import log_dir, run_streamed, safe_check_output
-from ..buildsystem.paths import bootstrapped_esmf_mk
 
 
 def _clone_with_retries(
@@ -96,8 +97,17 @@ def bootstrap_esmf(repo_root: Path, esmf_branch: str) -> None:
     (out / "esmf_mkfile.txt").write_text(str(mk) + "\n")
     print(f"ESMF installed under {inst}")
     print(f"Detected esmf.mk at: {mk}")
-    print(f"Next step: {repo_cmd(repo_root, "bootstrap", "deps")}")
-    print(f"Then run: {repo_cmd(repo_root, "verify")}")
+    print(f"Next step: {repo_cmd(repo_root, 'bootstrap', 'deps')}")
+    print(f"Then run: {repo_cmd(repo_root, 'verify')}")
+
+
+def _deps_preflight_failure(repo_root: Path, env: dict[str, str]) -> tuple[str, str] | None:
+    if shutil.which("pnetcdf-config", path=env.get("PATH")):
+        return None
+    return (
+        "Missing required tool for dependency bootstrap: pnetcdf-config",
+        "sudo apt install -y pnetcdf-bin",
+    )
 
 
 def bootstrap_deps(repo_root: Path) -> None:
@@ -118,6 +128,11 @@ def bootstrap_deps(repo_root: Path) -> None:
     build_env.setdefault("CC", "mpicc")
     build_env.setdefault("CXX", "mpicxx")
     build_env.setdefault("FC", "mpifort")
+
+    preflight = _deps_preflight_failure(repo_root, build_env)
+    if preflight:
+        msg, next_step = preflight
+        fail(msg, logs=out, next_step=next_step)
 
     repos: list[tuple[str, str, str]] = [
         ("bacio", "https://github.com/NOAA-EMC/NCEPLIBS-bacio.git", "v2.4.1"),
@@ -218,4 +233,4 @@ def bootstrap_deps(repo_root: Path) -> None:
     (out / "exit_code.txt").write_text("0\n")
     (out / "deps_prefix.txt").write_text(str(inst) + "\n")
     print(f"Dependencies installed under {inst}")
-
+PY
