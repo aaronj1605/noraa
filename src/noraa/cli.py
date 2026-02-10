@@ -8,7 +8,7 @@ import typer
 
 from .agent.diagnose import diagnose_log
 from .bootstrap.tasks import bootstrap_deps, bootstrap_esmf
-from .buildsystem.cmake_fallback import cmake_fallback_mpas
+from .buildsystem.configure import cmake_fallback_mpas
 from .buildsystem.env import build_env
 from .buildsystem.paths import (
     detect_verify_script,
