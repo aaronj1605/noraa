@@ -42,4 +42,3 @@ def test_deps_preflight_reports_missing_pnetcdf_config(tmp_path: Path, monkeypat
 def test_deps_preflight_ok_when_pnetcdf_config_present(tmp_path: Path, monkeypatch) -> None:
     monkeypatch.setattr(tasks.shutil, "which", lambda *_args, **_kwargs: "/usr/bin/pnetcdf-config")
     assert tasks._deps_preflight_failure(tmp_path, {"PATH": "/usr/bin"}) is None
-PY

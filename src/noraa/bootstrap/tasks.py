@@ -233,4 +233,3 @@ def bootstrap_deps(repo_root: Path) -> None:
     (out / "exit_code.txt").write_text("0\n")
     (out / "deps_prefix.txt").write_text(str(inst) + "\n")
     print(f"Dependencies installed under {inst}")
-PY
