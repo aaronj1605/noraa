@@ -12,6 +12,7 @@ from .bootstrap.tasks import bootstrap_deps, bootstrap_esmf
 from .buildsystem.configure import cmake_fallback_mpas
 from .buildsystem.env import build_env
 from .buildsystem.paths import (
+    bootstrapped_esmf_mk,
     detect_verify_script,
     resolve_deps_prefix,
     resolve_esmf_mkfile,
@@ -118,6 +119,7 @@ def verify(
     preflight = _verify_preflight_failure(
         repo_root,
         deps_prefix=resolved_deps,
+        esmf_mkfile=esmf_mkfile,
         using_verify_script=bool(script and script.exists()),
     )
     if preflight:
@@ -259,13 +261,29 @@ def _cmake_version() -> tuple[int, int, int] | None:
 
 
 def _verify_preflight_failure(
-    repo_root: Path, *, deps_prefix: str | None, using_verify_script: bool
+    repo_root: Path,
+    *,
+    deps_prefix: str | None,
+    esmf_mkfile: str | None,
+    using_verify_script: bool,
 ) -> tuple[str, str] | None:
     ccpp_prebuild = repo_root / "ccpp" / "framework" / "scripts" / "ccpp_prebuild.py"
     if not ccpp_prebuild.exists():
         return (
             f"Required CCPP submodule content is missing: {ccpp_prebuild}",
             "git submodule update --init --recursive",
+        )
+
+    explicit_mk = Path(esmf_mkfile) if esmf_mkfile else None
+    deps_mk = Path(deps_prefix) / "lib" / "esmf.mk" if deps_prefix else None
+    if not (
+        (explicit_mk and explicit_mk.exists())
+        or bootstrapped_esmf_mk(repo_root)
+        or (deps_mk and deps_mk.exists())
+    ):
+        return (
+            "Issue identified: ESMF not found (missing esmf.mk under .noraa/esmf/install and no valid --esmf-mkfile/--deps-prefix).",
+            repo_cmd(repo_root, "bootstrap", "esmf"),
         )
 
     if using_verify_script:

@@ -7,7 +7,7 @@ from noraa import cli
 
 def test_verify_preflight_detects_missing_ccpp_prebuild(tmp_path: Path) -> None:
     result = cli._verify_preflight_failure(
-        tmp_path, deps_prefix=None, using_verify_script=False
+        tmp_path, deps_prefix=None, esmf_mkfile=None, using_verify_script=False
     )
     assert result is not None
     msg, next_step = result
@@ -24,7 +24,7 @@ def test_verify_preflight_ok_when_ccpp_prebuild_exists(tmp_path: Path, monkeypat
     deps.mkdir(parents=True)
     monkeypatch.setattr(cli, "_cmake_version", lambda: (3, 28, 0))
     assert cli._verify_preflight_failure(
-        tmp_path, deps_prefix=None, using_verify_script=False
+        tmp_path, deps_prefix=None, esmf_mkfile=None, using_verify_script=False
     ) is None
 
 
@@ -34,7 +34,7 @@ def test_verify_preflight_detects_missing_deps(tmp_path: Path) -> None:
     prebuild.write_text("#!/usr/bin/env python3\n")
 
     result = cli._verify_preflight_failure(
-        tmp_path, deps_prefix=None, using_verify_script=False
+        tmp_path, deps_prefix=None, esmf_mkfile=None, using_verify_script=False
     )
     assert result is not None
     msg, next_step = result
@@ -51,9 +51,26 @@ def test_verify_preflight_detects_old_cmake(tmp_path: Path, monkeypatch) -> None
     monkeypatch.setattr(cli, "_cmake_version", lambda: (3, 22, 1))
 
     result = cli._verify_preflight_failure(
-        tmp_path, deps_prefix=None, using_verify_script=False
+        tmp_path, deps_prefix=None, esmf_mkfile=None, using_verify_script=False
     )
     assert result is not None
     msg, next_step = result
     assert "CMake >= 3.28 is required" in msg
     assert "pip install -U 'cmake>=3.28'" == next_step
+
+
+def test_verify_preflight_detects_missing_esmf(tmp_path: Path, monkeypatch) -> None:
+    prebuild = tmp_path / 'ccpp' / 'framework' / 'scripts' / 'ccpp_prebuild.py'
+    prebuild.parent.mkdir(parents=True)
+    prebuild.write_text('#!/usr/bin/env python3\n')
+    deps = tmp_path / '.noraa' / 'deps' / 'install'
+    deps.mkdir(parents=True)
+    monkeypatch.setattr(cli, '_cmake_version', lambda: (3, 28, 0))
+
+    result = cli._verify_preflight_failure(
+        tmp_path, deps_prefix=None, esmf_mkfile=None, using_verify_script=False
+    )
+    assert result is not None
+    msg, next_step = result
+    assert msg.startswith('Issue identified: ESMF not found')
+    assert next_step.startswith('noraa bootstrap esmf --repo')
