@@ -98,3 +98,38 @@ def test_format_preflight_failure_includes_action_required() -> None:
     )
     assert text.splitlines()[0] == "Issue identified: ESMF not found"
     assert text.splitlines()[1] == "Action required: noraa bootstrap esmf --repo /tmp/ufsatm"
+
+def test_verify_preflight_issues_collects_multiple(tmp_path: Path, monkeypatch) -> None:
+    monkeypatch.setattr(cli.shutil, "which", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr(cli, "_cmake_version", lambda: (3, 22, 1))
+
+    issues = cli._verify_preflight_issues(
+        tmp_path,
+        deps_prefix=None,
+        esmf_mkfile=None,
+        using_verify_script=False,
+    )
+    text = "\n".join(i for i, _ in issues)
+    assert "Required CCPP submodule content is missing" in text
+    assert "ESMF not found" in text
+    assert "MPAS dependency bundle not found" in text
+    assert "pnetcdf-config not found" in text
+    assert "CMake >= 3.28 is required" in text
+
+
+def test_format_preflight_summary_contains_action_lines() -> None:
+    summary = cli._format_preflight_summary(
+        [
+            (
+                "Issue identified: ESMF not found",
+                "noraa bootstrap esmf --repo /tmp/ufsatm",
+            ),
+            (
+                "Issue identified: CMake too old",
+                "pip install -U 'cmake>=3.28'",
+            ),
+        ]
+    )
+    assert "Preflight identified blocking issues:" in summary
+    assert "Action required: noraa bootstrap esmf --repo /tmp/ufsatm" in summary
+    assert "Action required: pip install -U 'cmake>=3.28'" in summary

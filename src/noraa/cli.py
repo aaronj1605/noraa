@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import os
 import subprocess
+import shutil
 import sys
 from pathlib import Path
 
@@ -110,6 +111,7 @@ def verify(
     deps_prefix: str = typer.Option(None, "--deps-prefix"),
     esmf_mkfile: str = typer.Option(None, "--esmf-mkfile"),
     clean: bool = typer.Option(True, "--clean/--no-clean"),
+    preflight_only: bool = typer.Option(False, "--preflight-only"),
 ):
     """
     Verify that MPAS can be configured and built for the target ufsatm repo.
@@ -125,15 +127,19 @@ def verify(
     script = Path(cfg.verify_script) if cfg.verify_script else None
     if not script or not script.exists():
         script = detect_verify_script(repo_root)
-    preflight = _verify_preflight_failure(
+    issues = _verify_preflight_issues(
         repo_root,
         deps_prefix=resolved_deps,
         esmf_mkfile=esmf_mkfile,
         using_verify_script=bool(script and script.exists()),
     )
-    if preflight:
-        msg, action = preflight
-        raise SystemExit(_format_preflight_failure(msg, action))
+    if preflight_only:
+        if issues:
+            raise SystemExit(_format_preflight_summary(issues))
+        print("Preflight OK. No blocking issues found.")
+        return
+    if issues:
+        raise SystemExit(_format_preflight_summary(issues))
     out = log_dir(repo_root, "verify")
 
     resolved_esmf = resolve_esmf_mkfile(repo_root, resolved_deps, esmf_mkfile)
@@ -269,18 +275,22 @@ def _cmake_version() -> tuple[int, int, int] | None:
     return (major, minor, patch)
 
 
-def _verify_preflight_failure(
+def _verify_preflight_issues(
     repo_root: Path,
     *,
     deps_prefix: str | None,
     esmf_mkfile: str | None,
     using_verify_script: bool,
-) -> tuple[str, str] | None:
+) -> list[tuple[str, str]]:
+    issues: list[tuple[str, str]] = []
+
     ccpp_prebuild = repo_root / "ccpp" / "framework" / "scripts" / "ccpp_prebuild.py"
     if not ccpp_prebuild.exists():
-        return (
-            f"Issue identified: Required CCPP submodule content is missing: {ccpp_prebuild}",
-            "git submodule update --init --recursive",
+        issues.append(
+            (
+                f"Issue identified: Required CCPP submodule content is missing: {ccpp_prebuild}",
+                "git submodule update --init --recursive",
+            )
         )
 
     explicit_mk = Path(esmf_mkfile) if esmf_mkfile else None
@@ -290,37 +300,79 @@ def _verify_preflight_failure(
         or bootstrapped_esmf_mk(repo_root)
         or (deps_mk and deps_mk.exists())
     ):
-        return (
-            "Issue identified: ESMF not found (missing esmf.mk under .noraa/esmf/install and no valid --esmf-mkfile/--deps-prefix).",
-            repo_cmd(repo_root, "bootstrap", "esmf"),
+        issues.append(
+            (
+                "Issue identified: ESMF not found (missing esmf.mk under .noraa/esmf/install and no valid --esmf-mkfile/--deps-prefix).",
+                repo_cmd(repo_root, "bootstrap", "esmf"),
+            )
         )
 
     if using_verify_script:
-        return None
+        return issues
 
     deps_root = Path(deps_prefix) if deps_prefix else repo_root / ".noraa" / "deps" / "install"
     if not deps_root.exists():
-        return (
-            f"Issue identified: MPAS dependency bundle not found: {deps_root}",
-            repo_cmd(repo_root, "bootstrap", "deps"),
+        issues.append(
+            (
+                f"Issue identified: MPAS dependency bundle not found: {deps_root}",
+                repo_cmd(repo_root, "bootstrap", "deps"),
+            )
+        )
+
+    if shutil.which("pnetcdf-config") is None:
+        issues.append(
+            (
+                "Issue identified: pnetcdf-config not found (needed for noraa bootstrap deps on clean systems).",
+                "sudo apt install -y pnetcdf-bin",
+            )
         )
 
     version = _cmake_version()
     if version is None:
-        return (
-            "Issue identified: CMake is required for verify fallback but was not found in PATH.",
-            "pip install -U 'cmake>=3.28'",
+        issues.append(
+            (
+                "Issue identified: CMake is required for verify fallback but was not found in PATH.",
+                "pip install -U 'cmake>=3.28'",
+            )
         )
-    if version < (3, 28, 0):
-        return (
-            f"Issue identified: CMake >= 3.28 is required for verify fallback (found {version[0]}.{version[1]}.{version[2]}).",
-            "pip install -U 'cmake>=3.28'",
+    elif version < (3, 28, 0):
+        issues.append(
+            (
+                f"Issue identified: CMake >= 3.28 is required for verify fallback (found {version[0]}.{version[1]}.{version[2]}).",
+                "pip install -U 'cmake>=3.28'",
+            )
         )
-    return None
+    return issues
+
+
+def _verify_preflight_failure(
+    repo_root: Path,
+    *,
+    deps_prefix: str | None,
+    esmf_mkfile: str | None,
+    using_verify_script: bool,
+) -> tuple[str, str] | None:
+    issues = _verify_preflight_issues(
+        repo_root,
+        deps_prefix=deps_prefix,
+        esmf_mkfile=esmf_mkfile,
+        using_verify_script=using_verify_script,
+    )
+    if not issues:
+        return None
+    return issues[0]
 
 
 def _format_preflight_failure(issue: str, action: str) -> str:
     return f"{issue}\nAction required: {action}"
+
+
+def _format_preflight_summary(issues: list[tuple[str, str]]) -> str:
+    lines = ["Preflight identified blocking issues:"]
+    for issue, action in issues:
+        lines.append(issue)
+        lines.append(f"Action required: {action}")
+    return "\n".join(lines)
 
 
 def _python_runtime_error() -> str | None:
