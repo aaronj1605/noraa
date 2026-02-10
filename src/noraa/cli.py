@@ -34,6 +34,13 @@ BASELINE_HELP = "Tested baseline: Linux (Ubuntu 22.04/24.04), Python 3.11+, upst
 app = typer.Typer(add_completion=False, help=BASELINE_HELP)
 
 
+@app.callback()
+def _root_callback() -> None:
+    """Tested baseline: Linux (Ubuntu 22.04/24.04), Python 3.11+, upstream ufsatm develop.
+    Use: noraa <command> --help for command details."""
+    return None
+
+
 def _target_repo(path: str) -> Path:
     return git_root(Path(path).resolve())
 
