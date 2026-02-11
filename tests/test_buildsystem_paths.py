@@ -60,6 +60,20 @@ def test_bootstrapped_path_helpers(tmp_path: Path) -> None:
     assert bootstrapped_esmf_mk(tmp_path) == esmf_mk
 
 
+def test_bootstrapped_esmf_mk_prefers_openmpi_candidate(tmp_path: Path) -> None:
+    esmf_root = tmp_path / ".noraa" / "esmf" / "install"
+
+    mpich_mk = esmf_root / "lib" / "libO" / "Linux.gfortran.64.mpich.default" / "esmf.mk"
+    mpich_mk.parent.mkdir(parents=True)
+    mpich_mk.write_text("ESMF")
+
+    openmpi_mk = esmf_root / "lib" / "libO" / "Linux.gfortran.64.openmpi.default" / "esmf.mk"
+    openmpi_mk.parent.mkdir(parents=True)
+    openmpi_mk.write_text("ESMF")
+
+    assert bootstrapped_esmf_mk(tmp_path) == openmpi_mk
+
+
 def test_resolve_deps_prefix_prefers_explicit(tmp_path: Path) -> None:
     explicit = tmp_path / "explicit_deps"
     explicit.mkdir()
@@ -108,4 +122,3 @@ def test_resolve_esmf_mkfile_raises_when_missing(tmp_path: Path) -> None:
     with pytest.raises(SystemExit) as excinfo:
         resolve_esmf_mkfile(tmp_path, deps_prefix=None, esmf_mkfile=None)
     assert "ESMF not found" in str(excinfo.value)
-

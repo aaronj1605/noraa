@@ -44,9 +44,28 @@ def bootstrapped_esmf_mk(repo_root: Path) -> Path | None:
     install_root = repo_root / ".noraa" / "esmf" / "install"
     if not install_root.exists():
         return None
-    for mk in install_root.rglob("esmf.mk"):
-        return mk
-    return None
+    candidates = sorted(install_root.rglob("esmf.mk"))
+    if not candidates:
+        return None
+
+    def score(mk: Path) -> tuple[int, int]:
+        text = str(mk).lower()
+        value = 0
+        # Prefer the OpenMPI-flavored build, which is the NORAA default.
+        if "openmpi" in text:
+            value += 100
+        if "gfortran" in text:
+            value += 25
+        # Prefer candidates with obvious compiled ESMF artifacts nearby.
+        if (mk.parent / "libesmf.so").exists() or (mk.parent / "libesmf.a").exists():
+            value += 50
+        mod_candidate = install_root / "mod" / "modO" / mk.parent.name / "esmf.mod"
+        if mod_candidate.exists():
+            value += 25
+        # Keep deterministic fallback ordering.
+        return (value, len(text))
+
+    return max(candidates, key=score)
 
 
 def bootstrapped_deps_prefix(repo_root: Path) -> Path | None:
@@ -89,4 +108,3 @@ def resolve_esmf_mkfile(
         "ESMF not found under .noraa/esmf/install and no valid --esmf-mkfile was provided.",
         next_step=repo_cmd(repo_root, "bootstrap", "esmf"),
     )
-
