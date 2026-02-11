@@ -54,6 +54,17 @@ def _candidate_name(path: Path) -> str:
     return path.stem.replace(" ", "_")
 
 
+def _looks_like_ic_file(nc: Path) -> bool:
+    name = nc.name.lower()
+    tokens = (
+        "init",
+        "initial",
+        "_ic",
+        "ic_",
+    )
+    return any(t in name for t in tokens)
+
+
 def discover_dataset_candidates(repo_root: Path) -> list[DatasetCandidate]:
     candidates: list[DatasetCandidate] = []
     include_dirs = ("data", "test", "tests", "example", "examples", "input", "inputs")
@@ -63,9 +74,12 @@ def discover_dataset_candidates(repo_root: Path) -> list[DatasetCandidate]:
             continue
         for nc in root.rglob("*.nc"):
             low = str(nc).replace("\\", "/").lower()
+            # Ignore NORAA-managed artifacts and embedded ESMF source trees.
+            if "/.noraa/" in low or "/esmf/src/" in low:
+                continue
             if not any(f"/{d}/" in low for d in include_dirs):
                 continue
-            if not any(k in nc.name.lower() for k in ("init", "ic")):
+            if not _looks_like_ic_file(nc):
                 continue
 
             lbc_file = None

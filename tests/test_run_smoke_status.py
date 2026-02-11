@@ -78,3 +78,22 @@ def test_discover_dataset_candidates_and_fetch(tmp_path: Path, monkeypatch) -> N
     checks = run_smoke.collect_status_checks(tmp_path)
     smoke_check = next(c for c in checks if c.name == "Smoke-run sample data")
     assert smoke_check.ok is True
+
+
+def test_discovery_excludes_noraa_esmf_noise(tmp_path: Path, monkeypatch) -> None:
+    monkeypatch.setattr(run_smoke, "_git_origin", lambda _p: "https://github.com/NOAA-EMC/ufsatm.git")
+
+    # This should be ignored (false positive seen in real usage).
+    noise = tmp_path / ".noraa" / "esmf" / "src" / "src" / "Infrastructure" / "Field" / "tests" / "data" / "C48_mosaic.nc"
+    noise.parent.mkdir(parents=True)
+    noise.write_text("x\n")
+
+    # This should be accepted.
+    ic = tmp_path / "tests" / "data" / "sample_init.nc"
+    ic.parent.mkdir(parents=True)
+    ic.write_text("ic\n")
+
+    candidates = run_smoke.discover_dataset_candidates(tmp_path)
+    paths = [str(c.ic_file) for c in candidates]
+    assert str(ic) in paths
+    assert str(noise) not in paths
