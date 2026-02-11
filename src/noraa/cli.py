@@ -250,7 +250,11 @@ def build_mpas(
             failure_message="Project initialization is required before guided build.",
             next_step=repo_cmd(repo_root, "init"),
         )
-        init(repo=str(repo_root))
+        init(
+            repo=str(repo_root),
+            force=False,
+            upstream_url="https://github.com/NOAA-EMC/ufsatm.git",
+        )
     _require_project(repo_root)
 
     ccpp_prebuild = repo_root / "ccpp" / "framework" / "scripts" / "ccpp_prebuild.py"
@@ -298,7 +302,13 @@ def build_mpas(
         print("Fix implemented: bootstrapped MPAS dependency bundle under .noraa/deps/install.")
 
     print("Running verify (MPAS only)...")
-    verify(repo=str(repo_root), clean=clean)
+    verify(
+        repo=str(repo_root),
+        deps_prefix=None,
+        esmf_mkfile=None,
+        clean=clean,
+        preflight_only=False,
+    )
 
 
 @app.command()
