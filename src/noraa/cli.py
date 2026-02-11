@@ -13,6 +13,7 @@ from .bootstrap.tasks import bootstrap_deps, bootstrap_esmf
 from .buildsystem.configure import cmake_fallback_mpas
 from .buildsystem.env import build_env
 from .buildsystem.paths import (
+    bootstrapped_deps_prefix,
     bootstrapped_esmf_mk,
     detect_verify_script,
     resolve_deps_prefix,
@@ -213,6 +214,91 @@ def bootstrap(
             f"{repo_cmd(repo_root, 'bootstrap', 'esmf')}"
         ),
     )
+
+
+def _confirm_or_fail(
+    *, prompt: str, assume_yes: bool, failure_message: str, next_step: str
+) -> None:
+    if assume_yes or typer.confirm(prompt, default=True):
+        return
+    fail(failure_message, next_step=next_step)
+
+
+@app.command("build-mpas")
+def build_mpas(
+    repo: str = typer.Option(".", "--repo"),
+    clean: bool = typer.Option(True, "--clean/--no-clean"),
+    yes: bool = typer.Option(
+        False, "--yes", help="Auto-accept guided prompts and run all steps."
+    ),
+    esmf_branch: str = typer.Option(
+        "v8.6.1",
+        "--esmf-branch",
+        help="ESMF git branch or tag to use if ESMF bootstrap is required.",
+    ),
+):
+    """
+    Guided one-command MPAS build path for a target ufsatm checkout.
+    """
+    repo_root = _target_repo(repo)
+    print(f"NORAA guided MPAS build for: {repo_root}")
+
+    if load_project(repo_root) is None:
+        _confirm_or_fail(
+            prompt="Project is not initialized. Run noraa init now?",
+            assume_yes=yes,
+            failure_message="Project initialization is required before guided build.",
+            next_step=repo_cmd(repo_root, "init"),
+        )
+        init(repo=str(repo_root))
+    _require_project(repo_root)
+
+    ccpp_prebuild = repo_root / "ccpp" / "framework" / "scripts" / "ccpp_prebuild.py"
+    if not ccpp_prebuild.exists():
+        _confirm_or_fail(
+            prompt="Required submodule content is missing. Run git submodule update --init --recursive now?",
+            assume_yes=yes,
+            failure_message=f"Required CCPP submodule content is missing: {ccpp_prebuild}",
+            next_step="git submodule update --init --recursive",
+        )
+        out = log_dir(repo_root, "build-mpas-submodules")
+        env = os.environ.copy()
+        write_env_snapshot(out, env)
+        write_tool_snapshot(out, env)
+        rc_submodule = run_streamed(
+            ["git", "submodule", "update", "--init", "--recursive"], repo_root, out, env
+        )
+        (out / "exit_code.txt").write_text(f"{rc_submodule}\n")
+        if rc_submodule != 0:
+            fail(
+                "Submodule update failed during guided build.",
+                logs=out,
+                next_step="git submodule update --init --recursive",
+            )
+        print("Fix implemented: initialized required git submodules.")
+
+    if bootstrapped_esmf_mk(repo_root) is None:
+        _confirm_or_fail(
+            prompt="ESMF is missing under .noraa/esmf/install. Bootstrap ESMF now?",
+            assume_yes=yes,
+            failure_message="Issue identified: ESMF is required before verify can run.",
+            next_step=repo_cmd(repo_root, "bootstrap", "esmf"),
+        )
+        bootstrap_esmf(repo_root, esmf_branch)
+        print("Fix implemented: bootstrapped ESMF under .noraa/esmf/install.")
+
+    if bootstrapped_deps_prefix(repo_root) is None:
+        _confirm_or_fail(
+            prompt="MPAS dependency bundle is missing under .noraa/deps/install. Bootstrap deps now?",
+            assume_yes=yes,
+            failure_message="Issue identified: MPAS dependency bundle is required before verify can run.",
+            next_step=repo_cmd(repo_root, "bootstrap", "deps"),
+        )
+        bootstrap_deps(repo_root)
+        print("Fix implemented: bootstrapped MPAS dependency bundle under .noraa/deps/install.")
+
+    print("Running verify (MPAS only)...")
+    verify(repo=str(repo_root), clean=clean)
 
 
 @app.command()
