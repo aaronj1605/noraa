@@ -36,6 +36,10 @@ run_smoke_app = typer.Typer(
     add_completion=False,
     help="Optional structured smoke-run helpers (readiness, data, execution).",
 )
+run_smoke_fetch_app = typer.Typer(
+    add_completion=False,
+    help="Pull smoke-run sample data from repo scan, official catalog, or local files.",
+)
 
 
 @app.callback()
@@ -46,6 +50,7 @@ def _root_callback() -> None:
 
 
 app.add_typer(run_smoke_app, name="run-smoke")
+run_smoke_app.add_typer(run_smoke_fetch_app, name="fetch-data")
 
 
 def _target_repo(path: str) -> Path:
@@ -281,103 +286,33 @@ def run_smoke_status(repo: str = typer.Option(".", "--repo")):
     print(report)
 
 
-@run_smoke_app.command("fetch-data")
-def run_smoke_fetch_data(
+def _print_fetch_result(repo_root: Path, source_repo: str, source_path: str, manifest: Path) -> None:
+    print(f"Source repository: {source_repo}")
+    print(f"Source path: {source_path}")
+    print(f"Dataset manifest written: {manifest}")
+    print(f"Run this command next: {repo_cmd(repo_root, 'run-smoke', 'status')}")
+
+
+@run_smoke_fetch_app.command("scan")
+def run_smoke_fetch_data_scan(
     repo: str = typer.Option(".", "--repo"),
-    source: str = typer.Option(
-        "scan",
-        "--source",
-        help="Data source mode: scan (repo files), official (curated URLs), local (user path).",
-    ),
     dataset: str = typer.Option(
         None,
         "--dataset",
-        help="Dataset name/id. For --source scan this is candidate name; for --source official this is official dataset id.",
-    ),
-    local_path: str = typer.Option(
-        None,
-        "--local-path",
-        help="For --source local: directory or file path containing user dataset files.",
+        help="Dataset name from discovered repo candidates.",
     ),
     yes: bool = typer.Option(False, "--yes", help="Auto-select first candidate."),
 ):
-    """
-    Pull smoke-run sample data from official checked-out repos first.
-
-    Sources searched:
-    - target ufsatm checkout
-    - mpas/MPAS-Model submodule (if present)
-    """
+    """Discover candidate `.nc` data in checked-out repos and register one dataset."""
     repo_root = _target_repo(repo)
     _require_project(repo_root)
-
-    if source not in {"scan", "official", "local"}:
-        fail(
-            f"Unsupported --source value: {source}",
-            next_step=f"{repo_cmd(repo_root, 'run-smoke', 'fetch-data')} --source scan",
-        )
-
-    if source == "local":
-        if not local_path:
-            fail(
-                "--local-path is required when --source local is used.",
-                next_step=f"{repo_cmd(repo_root, 'run-smoke', 'fetch-data')} --source local --local-path /path/to/data",
-            )
-        p = Path(local_path).expanduser().resolve()
-        if not p.exists():
-            fail(
-                f"Local data path does not exist: {p}",
-                next_step=f"{repo_cmd(repo_root, 'run-smoke', 'fetch-data')} --source local --local-path /path/to/data",
-            )
-        manifest = run_smoke.fetch_local_dataset(repo_root=repo_root, local_path=p, dataset_name=dataset or "local_user_data")
-        print("Source repository: user-local")
-        print(f"Source path: {p}")
-        print(f"Dataset manifest written: {manifest}")
-        print(f"Next step: {repo_cmd(repo_root, 'run-smoke', 'status')}")
-        return
-
-    if source == "official":
-        catalog = run_smoke.official_catalog()
-        selected_official = None
-        if dataset:
-            selected_official = run_smoke.resolve_official_dataset(dataset)
-            if selected_official is None:
-                ids = ", ".join(ds.dataset_id for ds in catalog)
-                fail(
-                    f"Unknown official dataset id: {dataset}",
-                    next_step=f"Use one of: {ids}",
-                )
-        elif yes or len(catalog) == 1:
-            selected_official = catalog[0]
-        else:
-            print("Official dataset options:")
-            for i, ds in enumerate(catalog, start=1):
-                print(f"{i}. {ds.dataset_id}  [source: {ds.source_repo}]")
-                print(f"   {ds.description}")
-                print(f"   url: {ds.url}")
-            choice = typer.prompt("Select official dataset number", type=int)
-            if choice < 1 or choice > len(catalog):
-                fail(
-                    f"Invalid dataset selection: {choice}",
-                    next_step=f"{repo_cmd(repo_root, 'run-smoke', 'fetch-data')} --source official",
-                )
-            selected_official = catalog[choice - 1]
-
-        print(f"Source repository: {selected_official.source_repo}")
-        print(f"Source path: {selected_official.url}")
-        manifest = run_smoke.fetch_official_bundle(repo_root=repo_root, dataset=selected_official)
-        print(f"Dataset manifest written: {manifest}")
-        print(f"Next step: {repo_cmd(repo_root, 'run-smoke', 'status')}")
-        return
-
-    # source == scan
     candidates = run_smoke.discover_dataset_candidates(repo_root)
     if not candidates:
         fail(
             "No candidate .nc datasets were discovered in official checked-out repos.",
             next_step=(
-                f"Try official curated datasets: {repo_cmd(repo_root, 'run-smoke', 'fetch-data')} --source official "
-                f"or use local files: {repo_cmd(repo_root, 'run-smoke', 'fetch-data')} --source local --local-path /path/to/data"
+                f"Try curated data: {repo_cmd(repo_root, 'run-smoke', 'fetch-data', 'official')} "
+                f"or local files: {repo_cmd(repo_root, 'run-smoke', 'fetch-data', 'local')} --local-path /path/to/data"
             ),
         )
 
@@ -407,16 +342,127 @@ def run_smoke_fetch_data(
         if choice < 1 or choice > len(candidates):
             fail(
                 f"Invalid dataset selection: {choice}",
-                next_step=repo_cmd(repo_root, "run-smoke", "fetch-data"),
+                next_step=repo_cmd(repo_root, "run-smoke", "fetch-data", "scan"),
             )
         selected = candidates[choice - 1]
 
     source_repo = selected.source_repo_url or str(selected.source_repo_path)
-    print(f"Source repository: {source_repo}")
-    print(f"Source path: {selected.ic_file}")
     manifest = run_smoke.fetch_dataset(repo_root=repo_root, candidate=selected)
-    print(f"Dataset manifest written: {manifest}")
-    print(f"Next step: {repo_cmd(repo_root, 'run-smoke', 'status')}")
+    _print_fetch_result(repo_root, source_repo, str(selected.ic_file), manifest)
+
+
+@run_smoke_fetch_app.command("official")
+def run_smoke_fetch_data_official(
+    repo: str = typer.Option(".", "--repo"),
+    dataset: str = typer.Option(
+        None,
+        "--dataset",
+        help="Official curated dataset id.",
+    ),
+    yes: bool = typer.Option(False, "--yes", help="Auto-select first candidate."),
+):
+    """Select from curated official MPAS test-case bundles and register metadata."""
+    repo_root = _target_repo(repo)
+    _require_project(repo_root)
+    catalog = run_smoke.official_catalog()
+    selected_official = None
+    if dataset:
+        selected_official = run_smoke.resolve_official_dataset(dataset)
+        if selected_official is None:
+            ids = ", ".join(ds.dataset_id for ds in catalog)
+            fail(
+                f"Unknown official dataset id: {dataset}",
+                next_step=f"Use one of: {ids}",
+            )
+    elif yes or len(catalog) == 1:
+        selected_official = catalog[0]
+    else:
+        print("Official dataset options:")
+        for i, ds in enumerate(catalog, start=1):
+            print(f"{i}. {ds.dataset_id}  [source: {ds.source_repo}]")
+            print(f"   {ds.description}")
+            print(f"   url: {ds.url}")
+        choice = typer.prompt("Select official dataset number", type=int)
+        if choice < 1 or choice > len(catalog):
+            fail(
+                f"Invalid dataset selection: {choice}",
+                next_step=repo_cmd(repo_root, "run-smoke", "fetch-data", "official"),
+            )
+        selected_official = catalog[choice - 1]
+
+    manifest = run_smoke.fetch_official_bundle(repo_root=repo_root, dataset=selected_official)
+    _print_fetch_result(repo_root, selected_official.source_repo, selected_official.url, manifest)
+
+
+@run_smoke_fetch_app.command("local")
+def run_smoke_fetch_data_local(
+    repo: str = typer.Option(".", "--repo"),
+    local_path: str = typer.Option(
+        ...,
+        "--local-path",
+        help="Directory or file path containing user dataset files.",
+    ),
+    dataset: str = typer.Option(
+        "local_user_data",
+        "--dataset",
+        help="Dataset name to store under .noraa/runs/smoke/data.",
+    ),
+):
+    """Register user-provided local dataset files under `.noraa/runs/smoke/data`."""
+    repo_root = _target_repo(repo)
+    _require_project(repo_root)
+    p = Path(local_path).expanduser().resolve()
+    if not p.exists():
+        fail(
+            f"Local data path does not exist: {p}",
+            next_step=f"{repo_cmd(repo_root, 'run-smoke', 'fetch-data', 'local')} --local-path /path/to/data",
+        )
+    manifest = run_smoke.fetch_local_dataset(repo_root=repo_root, local_path=p, dataset_name=dataset)
+    _print_fetch_result(repo_root, "user-local", str(p), manifest)
+
+
+@run_smoke_app.command("execute")
+def run_smoke_execute(
+    repo: str = typer.Option(".", "--repo"),
+    timeout_sec: int = typer.Option(20, "--timeout-sec"),
+    command: str = typer.Option(
+        None,
+        "--command",
+        help="Optional override command to run in the smoke execution directory.",
+    ),
+):
+    """Run a short structured smoke execution probe after readiness is GREEN."""
+    repo_root = _target_repo(repo)
+    _require_project(repo_root)
+
+    checks = run_smoke.collect_status_checks(repo_root)
+    _, ready = run_smoke.format_status_report(checks)
+    if not ready:
+        next_cmd = run_smoke.first_blocking_action(checks) or repo_cmd(
+            repo_root, "run-smoke", "status"
+        )
+        fail(
+            "Run-smoke execute is blocked because readiness is not GREEN.",
+            next_step=next_cmd,
+        )
+
+    result = run_smoke.execute_smoke(
+        repo_root=repo_root, timeout_sec=timeout_sec, command_text=command
+    )
+    print("NORAA run-smoke execution summary:")
+    print(f"Run directory: {result.run_dir}")
+    print(f"Command: {' '.join(result.command)}")
+    print(f"Result: {'PASS' if result.ok else 'FAIL'}")
+    print(f"Details: {result.reason}")
+    print(f"Logs: {result.run_dir}")
+    if result.ok:
+        print(f"Run this command next: {repo_cmd(repo_root, 'run-smoke', 'status')}")
+        return
+    fail(
+        "Run-smoke execute failed.",
+        next_step=repo_cmd(repo_root, "run-smoke", "execute"),
+        logs=result.run_dir,
+    )
 
 
 @app.command()

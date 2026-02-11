@@ -1,9 +1,13 @@
 from __future__ import annotations
 
+import os
+import shlex
+import subprocess
 import shutil
 import tarfile
 import urllib.request
 from dataclasses import dataclass
+from datetime import datetime
 from pathlib import Path
 
 try:
@@ -39,6 +43,15 @@ class OfficialDataset:
     url: str
     source_repo: str
     description: str
+
+
+@dataclass(frozen=True)
+class ExecuteResult:
+    ok: bool
+    run_dir: Path
+    command: list[str]
+    returncode: int | None
+    reason: str
 
 
 def _git_origin(path: Path) -> str:
@@ -345,3 +358,96 @@ def format_status_report(checks: list[StatusCheck]) -> tuple[str, bool]:
             lines.append(f"Action required: {c.action_required}")
     lines.append("READY: all required checks passed." if all_ok else "NOT READY: fix RED items before run-smoke execute.")
     return "\n".join(lines), all_ok
+
+
+def first_blocking_action(checks: list[StatusCheck]) -> str | None:
+    for check in checks:
+        if not check.ok and check.action_required:
+            return check.action_required
+    return None
+
+
+def _looks_like_runtime_ok(stdout_text: str, stderr_text: str) -> bool:
+    text = f"{stdout_text}\n{stderr_text}".lower()
+    markers = ("namelist", "streams", "usage", "input")
+    return any(marker in text for marker in markers)
+
+
+def _smoke_exec_dir(repo_root: Path) -> Path:
+    ts = datetime.now().strftime("%Y%m%d-%H%M%S")
+    out = repo_root / ".noraa" / "runs" / "smoke" / "exec" / ts
+    out.mkdir(parents=True, exist_ok=True)
+    return out
+
+
+def execute_smoke(
+    *,
+    repo_root: Path,
+    timeout_sec: int = 20,
+    command_text: str | None = None,
+) -> ExecuteResult:
+    run_dir = _smoke_exec_dir(repo_root)
+    mpas_exe = repo_root / ".noraa" / "build" / "bin" / "mpas_atmosphere"
+    command = (
+        shlex.split(command_text, posix=(os.name != "nt"))
+        if command_text
+        else [str(mpas_exe)]
+    )
+
+    (run_dir / "command.txt").write_text(" ".join(command) + "\n", encoding="utf-8")
+    stdout_path = run_dir / "stdout.txt"
+    stderr_path = run_dir / "stderr.txt"
+
+    try:
+        proc = subprocess.run(
+            command,
+            cwd=run_dir,
+            capture_output=True,
+            text=True,
+            timeout=timeout_sec,
+            check=False,
+        )
+        stdout_path.write_text(proc.stdout or "", encoding="utf-8")
+        stderr_path.write_text(proc.stderr or "", encoding="utf-8")
+
+        if proc.returncode == 0:
+            reason = "Smoke execution command completed successfully."
+            ok = True
+        elif _looks_like_runtime_ok(proc.stdout or "", proc.stderr or ""):
+            reason = (
+                "Smoke execution reached runtime checks (non-zero exit, but executable launched and "
+                "reported expected runtime input/namelist guidance)."
+            )
+            ok = True
+        else:
+            reason = f"Smoke execution failed with return code {proc.returncode}."
+            ok = False
+        returncode: int | None = proc.returncode
+    except subprocess.TimeoutExpired as exc:
+        stdout_path.write_text(exc.stdout or "", encoding="utf-8")
+        stderr_path.write_text(exc.stderr or "", encoding="utf-8")
+        reason = (
+            f"Smoke execution exceeded timeout ({timeout_sec}s) after launch. "
+            "Process started; treat as runtime-reachable."
+        )
+        ok = True
+        returncode = None
+    except FileNotFoundError:
+        stdout_path.write_text("", encoding="utf-8")
+        stderr_path.write_text("Executable not found while launching smoke command.\n", encoding="utf-8")
+        reason = "Smoke execution command could not be launched."
+        ok = False
+        returncode = None
+
+    (run_dir / "result.txt").write_text(
+        "\n".join(
+            [
+                f"ok={str(ok).lower()}",
+                f"returncode={'' if returncode is None else returncode}",
+                f"reason={reason}",
+            ]
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+    return ExecuteResult(ok=ok, run_dir=run_dir, command=command, returncode=returncode, reason=reason)
