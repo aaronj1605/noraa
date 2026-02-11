@@ -185,7 +185,7 @@ def execute(*, repo_root: Path, timeout_sec: int, command: str | None) -> None:
     print("NORAA run-smoke execution summary:")
     print(f"Run directory: {result.run_dir}")
     print(f"Command: {' '.join(result.command)}")
-    print(f"Result: {'PASS' if result.ok else 'FAIL'}")
+    print(f"Result: {run_smoke.execution_label(result)}")
     print(f"Details: {result.reason}")
     print(f"Logs: {result.run_dir}")
     if result.ok:

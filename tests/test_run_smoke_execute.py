@@ -55,6 +55,7 @@ def test_execute_smoke_accepts_runtime_reachable_nonzero(tmp_path: Path) -> None
     assert (result.run_dir / "stdout.txt").exists()
     assert (result.run_dir / "stderr.txt").exists()
     assert (result.run_dir / "result.txt").exists()
+    assert run_smoke.execution_label(result) == "REACHED_RUNTIME_NONZERO"
 
 
 def test_execute_smoke_fails_on_unrecognized_nonzero(tmp_path: Path) -> None:
@@ -71,4 +72,26 @@ def test_execute_smoke_fails_on_unrecognized_nonzero(tmp_path: Path) -> None:
     assert result.ok is False
     assert result.returncode == 3
     assert "failed with return code 3" in result.reason
+    assert run_smoke.execution_label(result) == "FAIL"
 
+
+def test_execute_label_pass() -> None:
+    result = run_smoke.ExecuteResult(
+        ok=True,
+        run_dir=Path("."),
+        command=["x"],
+        returncode=0,
+        reason="ok",
+    )
+    assert run_smoke.execution_label(result) == "PASS"
+
+
+def test_execute_label_runtime_timeout() -> None:
+    result = run_smoke.ExecuteResult(
+        ok=True,
+        run_dir=Path("."),
+        command=["x"],
+        returncode=None,
+        reason="timeout",
+    )
+    assert run_smoke.execution_label(result) == "REACHED_RUNTIME_TIMEOUT"

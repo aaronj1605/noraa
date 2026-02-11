@@ -61,6 +61,16 @@ class ExecuteResult:
     reason: str
 
 
+def execution_label(result: ExecuteResult) -> str:
+    if result.returncode == 0:
+        return "PASS"
+    if result.ok and result.returncode is None:
+        return "REACHED_RUNTIME_TIMEOUT"
+    if result.ok:
+        return "REACHED_RUNTIME_NONZERO"
+    return "FAIL"
+
+
 def htf_citation(accessed_on: str) -> str:
     return (
         "NOAA Unified Forecast System (UFS) Hierarchical Testing Framework (HTF) "
