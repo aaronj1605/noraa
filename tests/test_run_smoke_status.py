@@ -118,3 +118,28 @@ def test_runtime_compatibility_reports_metadata_only_manifest(tmp_path: Path) ->
     assert ok is False
     assert "metadata-only" in detail
     assert "fetch-data local" in action
+
+
+def test_fetch_official_ufs_prefix_writes_manifest_with_citation(
+    tmp_path: Path, monkeypatch
+) -> None:
+    calls: list[list[str]] = []
+
+    def _fake_run(cmd, check, text):
+        calls.append(cmd)
+        return None
+
+    monkeypatch.setattr(run_smoke.subprocess, "run", _fake_run)
+    manifest = run_smoke.fetch_official_ufs_prefix(
+        repo_root=tmp_path,
+        s3_prefix="develop-20250530/example_case",
+        aws_bin="aws",
+        accessed_on="2026-02-11",
+    )
+
+    assert calls
+    assert calls[0][:6] == ["aws", "s3", "cp", "--recursive", "--no-sign-request", "s3://noaa-ufs-htf-pds/develop-20250530/example_case/"]
+    text = manifest.read_text(encoding="utf-8")
+    assert 'source_repo = "https://registry.opendata.aws/noaa-ufs-htf-pds"' in text
+    assert 'citation_accessed_on = "2026-02-11"' in text
+    assert "NOAA Unified Forecast System (UFS) Hierarchical Testing Framework (HTF)" in text

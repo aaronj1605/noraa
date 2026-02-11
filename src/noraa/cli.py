@@ -286,9 +286,17 @@ def run_smoke_status(repo: str = typer.Option(".", "--repo")):
     print(report)
 
 
-def _print_fetch_result(repo_root: Path, source_repo: str, source_path: str, manifest: Path) -> None:
+def _print_fetch_result(
+    repo_root: Path,
+    source_repo: str,
+    source_path: str,
+    manifest: Path,
+    citation: str | None = None,
+) -> None:
     print(f"Source repository: {source_repo}")
     print(f"Source path: {source_path}")
+    if citation:
+        print(f"Citation: {citation}")
     print(f"Dataset manifest written: {manifest}")
     print(f"Run this command next: {repo_cmd(repo_root, 'run-smoke', 'status')}")
 
@@ -395,6 +403,46 @@ def run_smoke_fetch_data_official(
     if not selected_official.runtime_compatible:
         print("NORAA identified: this official dataset is metadata-only for current ufsatm runtime execution.")
         print(f"Action required: {repo_cmd(repo_root, 'run-smoke', 'fetch-data', 'local')} --local-path /path/to/ufs-runtime-data --dataset ufs_runtime_case")
+
+
+@run_smoke_fetch_app.command("official-ufs")
+def run_smoke_fetch_data_official_ufs(
+    repo: str = typer.Option(".", "--repo"),
+    s3_prefix: str = typer.Option(
+        ...,
+        "--s3-prefix",
+        help="HTF S3 prefix under noaa-ufs-htf-pds (example: develop-20250530/<case-path>).",
+    ),
+):
+    """Fetch UFS/HTF case data from noaa-ufs-htf-pds and record required citation."""
+    repo_root = _target_repo(repo)
+    _require_project(repo_root)
+    if shutil.which("aws") is None:
+        fail(
+            "NORAA identified: aws CLI is required for official-ufs dataset fetch.",
+            next_step="python -m pip install -U awscli",
+        )
+
+    try:
+        manifest = run_smoke.fetch_official_ufs_prefix(
+            repo_root=repo_root,
+            s3_prefix=s3_prefix,
+            aws_bin="aws",
+        )
+    except Exception as e:
+        fail(
+            f"HTF dataset fetch failed: {e}",
+            next_step=f"{repo_cmd(repo_root, 'run-smoke', 'fetch-data', 'official-ufs')} --s3-prefix <prefix>",
+        )
+
+    citation = run_smoke.htf_citation(run_smoke.current_utc_date())
+    _print_fetch_result(
+        repo_root,
+        run_smoke.HTF_REGISTRY_URL,
+        f"{run_smoke.HTF_BUCKET}/{s3_prefix.strip().strip('/')}/",
+        manifest,
+        citation=citation,
+    )
 
 
 @run_smoke_fetch_app.command("local")

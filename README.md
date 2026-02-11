@@ -31,6 +31,7 @@ What these are for:
 - `python3 python3-venv python3-pip`: required Python runtime and isolated environment for NORAA.
 - `openmpi-bin libopenmpi-dev`: MPI runtime/compiler wrappers used by MPAS/UFS builds.
 - `libnetcdf-dev libnetcdff-dev libpnetcdf-dev pnetcdf-bin`: NetCDF/PnetCDF headers/libs and `pnetcdf-config` used by dependency bootstrap.
+- `awscli` (optional): required only when fetching UFS/HTF datasets from `noaa-ufs-htf-pds` with `noraa run-smoke fetch-data official-ufs`.
 
 If your image provides `python3.11`, you can use it explicitly. Otherwise use `python3`.
 
@@ -84,7 +85,14 @@ noraa verify --repo ~/work/ufsatm
 - noraa verify: run the MPAS-only configure and build validation (MPAS=ON, FV3=OFF) and write detailed logs under .noraa/logs/.... Treat this as the main pass/fail build check.
 - noraa run-smoke status: show RED/GREEN readiness checks for optional smoke execution and print required follow-up actions.
 - noraa run-smoke fetch-data scan|official|local: register smoke-run dataset metadata from scanned repo files, curated official test-case URLs, or user-local files.
+- noraa run-smoke fetch-data official-ufs: fetch case data from `noaa-ufs-htf-pds` (AWS Open Data) and record required citation metadata.
 - noraa run-smoke execute: run a short, structured smoke execution probe after readiness is GREEN and write command/stdout/stderr/result under .noraa/runs/smoke/exec/.
+
+## HTF Citation
+
+For datasets fetched from `noaa-ufs-htf-pds`, NORAA prints and records:
+
+`NOAA Unified Forecast System (UFS) Hierarchical Testing Framework (HTF) was accessed on YYYY-MM-DD from https://registry.opendata.aws/noaa-ufs-htf-pds.`
 
 ## Logs and Artifacts
 

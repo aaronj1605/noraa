@@ -7,7 +7,7 @@ import shutil
 import tarfile
 import urllib.request
 from dataclasses import dataclass
-from datetime import datetime
+from datetime import datetime, timezone
 from pathlib import Path
 
 try:
@@ -18,6 +18,9 @@ except Exception:  # pragma: no cover
 from ..buildsystem.paths import bootstrapped_deps_prefix, bootstrapped_esmf_mk
 from ..messages import repo_cmd
 from ..util import safe_check_output
+
+HTF_REGISTRY_URL = "https://registry.opendata.aws/noaa-ufs-htf-pds"
+HTF_BUCKET = "s3://noaa-ufs-htf-pds"
 
 
 @dataclass(frozen=True)
@@ -54,6 +57,17 @@ class ExecuteResult:
     command: list[str]
     returncode: int | None
     reason: str
+
+
+def htf_citation(accessed_on: str) -> str:
+    return (
+        "NOAA Unified Forecast System (UFS) Hierarchical Testing Framework (HTF) "
+        f"was accessed on {accessed_on} from {HTF_REGISTRY_URL}."
+    )
+
+
+def current_utc_date() -> str:
+    return datetime.now(timezone.utc).strftime("%Y-%m-%d")
 
 
 def _git_origin(path: Path) -> str:
@@ -285,6 +299,47 @@ def fetch_official_bundle(*, repo_root: Path, dataset: OfficialDataset) -> Path:
         f'bundle_dir = "{dataset.dataset_id}"\n'
         f"runtime_compatible = {str(dataset.runtime_compatible).lower()}\n"
         f'runtime_note = "{dataset.runtime_note}"\n',
+        encoding="utf-8",
+    )
+    return manifest
+
+
+def fetch_official_ufs_prefix(
+    *,
+    repo_root: Path,
+    s3_prefix: str,
+    aws_bin: str = "aws",
+    accessed_on: str | None = None,
+) -> Path:
+    data_root = _dataset_root(repo_root)
+    data_root.mkdir(parents=True, exist_ok=True)
+
+    prefix = s3_prefix.strip().strip("/")
+    if not prefix:
+        raise ValueError("s3_prefix cannot be empty")
+    dataset_id = prefix.split("/")[-1]
+    bundle_dir = data_root / dataset_id
+    bundle_dir.mkdir(parents=True, exist_ok=True)
+
+    source_path = f"{HTF_BUCKET}/{prefix}/"
+    subprocess.run(
+        [aws_bin, "s3", "cp", "--recursive", "--no-sign-request", source_path, str(bundle_dir)],
+        check=True,
+        text=True,
+    )
+
+    accessed = accessed_on or current_utc_date()
+    citation = htf_citation(accessed)
+    manifest = _dataset_manifest_path(repo_root)
+    manifest.write_text(
+        "[dataset]\n"
+        f'name = "{dataset_id}"\n'
+        f'source_repo = "{HTF_REGISTRY_URL}"\n'
+        f'source_path = "{source_path}"\n'
+        f'bundle_dir = "{dataset_id}"\n'
+        "runtime_compatible = true\n"
+        f'citation = "{citation}"\n'
+        f'citation_accessed_on = "{accessed}"\n',
         encoding="utf-8",
     )
     return manifest

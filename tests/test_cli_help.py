@@ -21,5 +21,6 @@ def test_run_smoke_fetch_data_help_is_command_oriented() -> None:
     assert "Commands" in result.stdout
     assert "scan" in result.stdout
     assert "official" in result.stdout
+    assert "official-ufs" in result.stdout
     assert "local" in result.stdout
     assert "--source" not in result.stdout
