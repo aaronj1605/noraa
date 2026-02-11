@@ -26,6 +26,7 @@ def test_verify_preflight_ok_when_ccpp_prebuild_exists(tmp_path: Path, monkeypat
     esmf_mk.parent.mkdir(parents=True)
     esmf_mk.write_text("ESMF\n")
     monkeypatch.setattr(cli, "_cmake_version", lambda: (3, 28, 0))
+    monkeypatch.setattr(cli.shutil, "which", lambda *_args, **_kwargs: "/usr/bin/pnetcdf-config")
 
     assert cli._verify_preflight_failure(
         tmp_path, deps_prefix=None, esmf_mkfile=None, using_verify_script=False
@@ -62,6 +63,7 @@ def test_verify_preflight_detects_old_cmake(tmp_path: Path, monkeypatch) -> None
     explicit_esmf.parent.mkdir(parents=True)
     explicit_esmf.write_text("ESMF\n")
     monkeypatch.setattr(cli, "_cmake_version", lambda: (3, 22, 1))
+    monkeypatch.setattr(cli.shutil, "which", lambda *_args, **_kwargs: "/usr/bin/pnetcdf-config")
 
     result = cli._verify_preflight_failure(
         tmp_path,

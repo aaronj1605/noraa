@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import os
-import subprocess
 import shutil
 import sys
 from pathlib import Path
@@ -13,8 +12,6 @@ from .bootstrap.tasks import bootstrap_deps, bootstrap_esmf
 from .buildsystem.configure import cmake_fallback_mpas
 from .buildsystem.env import build_env
 from .buildsystem.paths import (
-    bootstrapped_deps_prefix,
-    bootstrapped_esmf_mk,
     detect_verify_script,
     resolve_deps_prefix,
     resolve_esmf_mkfile,
@@ -30,6 +27,7 @@ from .project import (
 from .snapshot import write_env_snapshot, write_tool_snapshot
 from .util import git_root, log_dir, run_streamed, safe_check_output
 from .validate import validate_mpas_success
+from .workflow import guided_build, preflight
 
 BASELINE_HELP = "Tested baseline: Linux (Ubuntu 22.04/24.04), Python 3.11+, upstream ufsatm develop.\nUse: noraa <command> --help for command details."
 
@@ -219,9 +217,13 @@ def bootstrap(
 def _confirm_or_fail(
     *, prompt: str, assume_yes: bool, failure_message: str, next_step: str
 ) -> None:
-    if assume_yes or typer.confirm(prompt, default=True):
-        return
-    fail(failure_message, next_step=next_step)
+    guided_build.confirm_or_fail(
+        prompt=prompt,
+        assume_yes=assume_yes,
+        failure_message=failure_message,
+        next_step=next_step,
+        confirm_fn=lambda msg: typer.confirm(msg, default=True),
+    )
 
 
 @app.command("build-mpas")
@@ -241,73 +243,25 @@ def build_mpas(
     Guided one-command MPAS build path for a target ufsatm checkout.
     """
     repo_root = _target_repo(repo)
-    print(f"NORAA guided MPAS build for: {repo_root}")
-
-    if load_project(repo_root) is None:
-        _confirm_or_fail(
-            prompt="Project is not initialized. Run noraa init now?",
-            assume_yes=yes,
-            failure_message="Project initialization is required before guided build.",
-            next_step=repo_cmd(repo_root, "init"),
-        )
-        init(
-            repo=str(repo_root),
+    guided_build.run_build_mpas(
+        repo_root=repo_root,
+        clean=clean,
+        yes=yes,
+        esmf_branch=esmf_branch,
+        confirm_fn=lambda msg: typer.confirm(msg, default=True),
+        init_project_fn=lambda p: init(
+            repo=str(p),
             force=False,
             upstream_url="https://github.com/NOAA-EMC/ufsatm.git",
-        )
-    _require_project(repo_root)
-
-    ccpp_prebuild = repo_root / "ccpp" / "framework" / "scripts" / "ccpp_prebuild.py"
-    if not ccpp_prebuild.exists():
-        _confirm_or_fail(
-            prompt="Required submodule content is missing. Run git submodule update --init --recursive now?",
-            assume_yes=yes,
-            failure_message=f"Required CCPP submodule content is missing: {ccpp_prebuild}",
-            next_step="git submodule update --init --recursive",
-        )
-        out = log_dir(repo_root, "build-mpas-submodules")
-        env = os.environ.copy()
-        write_env_snapshot(out, env)
-        write_tool_snapshot(out, env)
-        rc_submodule = run_streamed(
-            ["git", "submodule", "update", "--init", "--recursive"], repo_root, out, env
-        )
-        (out / "exit_code.txt").write_text(f"{rc_submodule}\n")
-        if rc_submodule != 0:
-            fail(
-                "Submodule update failed during guided build.",
-                logs=out,
-                next_step="git submodule update --init --recursive",
-            )
-        print("Fix implemented: initialized required git submodules.")
-
-    if bootstrapped_esmf_mk(repo_root) is None:
-        _confirm_or_fail(
-            prompt="ESMF is missing under .noraa/esmf/install. Bootstrap ESMF now?",
-            assume_yes=yes,
-            failure_message="Issue identified: ESMF is required before verify can run.",
-            next_step=repo_cmd(repo_root, "bootstrap", "esmf"),
-        )
-        bootstrap_esmf(repo_root, esmf_branch)
-        print("Fix implemented: bootstrapped ESMF under .noraa/esmf/install.")
-
-    if bootstrapped_deps_prefix(repo_root) is None:
-        _confirm_or_fail(
-            prompt="MPAS dependency bundle is missing under .noraa/deps/install. Bootstrap deps now?",
-            assume_yes=yes,
-            failure_message="Issue identified: MPAS dependency bundle is required before verify can run.",
-            next_step=repo_cmd(repo_root, "bootstrap", "deps"),
-        )
-        bootstrap_deps(repo_root)
-        print("Fix implemented: bootstrapped MPAS dependency bundle under .noraa/deps/install.")
-
-    print("Running verify (MPAS only)...")
-    verify(
-        repo=str(repo_root),
-        deps_prefix=None,
-        esmf_mkfile=None,
-        clean=clean,
-        preflight_only=False,
+        ),
+        require_project_fn=_require_project,
+        verify_fn=lambda p, do_clean: verify(
+            repo=str(p),
+            deps_prefix=None,
+            esmf_mkfile=None,
+            clean=do_clean,
+            preflight_only=False,
+        ),
     )
 
 
@@ -353,22 +307,7 @@ def diagnose(
 
 
 def _cmake_version() -> tuple[int, int, int] | None:
-    try:
-        out = subprocess.check_output(["cmake", "--version"], text=True)
-    except Exception:
-        return None
-    first = out.splitlines()[0] if out else ""
-    marker = "version "
-    if marker not in first:
-        return None
-    v = first.split(marker, 1)[1].strip().split()[0]
-    parts = v.split(".")
-    if len(parts) < 2:
-        return None
-    major = int(parts[0])
-    minor = int(parts[1])
-    patch = int(parts[2]) if len(parts) > 2 and parts[2].isdigit() else 0
-    return (major, minor, patch)
+    return preflight.cmake_version()
 
 
 def _verify_preflight_issues(
@@ -378,67 +317,13 @@ def _verify_preflight_issues(
     esmf_mkfile: str | None,
     using_verify_script: bool,
 ) -> list[tuple[str, str]]:
-    issues: list[tuple[str, str]] = []
-
-    ccpp_prebuild = repo_root / "ccpp" / "framework" / "scripts" / "ccpp_prebuild.py"
-    if not ccpp_prebuild.exists():
-        issues.append(
-            (
-                f"Issue identified: Required CCPP submodule content is missing: {ccpp_prebuild}",
-                "git submodule update --init --recursive",
-            )
-        )
-
-    explicit_mk = Path(esmf_mkfile) if esmf_mkfile else None
-    deps_mk = Path(deps_prefix) / "lib" / "esmf.mk" if deps_prefix else None
-    if not (
-        (explicit_mk and explicit_mk.exists())
-        or bootstrapped_esmf_mk(repo_root)
-        or (deps_mk and deps_mk.exists())
-    ):
-        issues.append(
-            (
-                "Issue identified: ESMF not found (missing esmf.mk under .noraa/esmf/install and no valid --esmf-mkfile/--deps-prefix).",
-                repo_cmd(repo_root, "bootstrap", "esmf"),
-            )
-        )
-
-    if using_verify_script:
-        return issues
-
-    deps_root = Path(deps_prefix) if deps_prefix else repo_root / ".noraa" / "deps" / "install"
-    if not deps_root.exists():
-        issues.append(
-            (
-                f"Issue identified: MPAS dependency bundle not found: {deps_root}",
-                repo_cmd(repo_root, "bootstrap", "deps"),
-            )
-        )
-
-    if shutil.which("pnetcdf-config") is None:
-        issues.append(
-            (
-                "Issue identified: pnetcdf-config not found (needed for noraa bootstrap deps on clean systems).",
-                "sudo apt install -y pnetcdf-bin",
-            )
-        )
-
-    version = _cmake_version()
-    if version is None:
-        issues.append(
-            (
-                "Issue identified: CMake is required for verify fallback but was not found in PATH.",
-                "pip install -U 'cmake>=3.28'",
-            )
-        )
-    elif version < (3, 28, 0):
-        issues.append(
-            (
-                f"Issue identified: CMake >= 3.28 is required for verify fallback (found {version[0]}.{version[1]}.{version[2]}).",
-                "pip install -U 'cmake>=3.28'",
-            )
-        )
-    return issues
+    return preflight.verify_preflight_issues(
+        repo_root,
+        deps_prefix=deps_prefix,
+        esmf_mkfile=esmf_mkfile,
+        using_verify_script=using_verify_script,
+        cmake_version_fn=_cmake_version,
+    )
 
 
 def _verify_preflight_failure(
@@ -464,21 +349,11 @@ def _format_preflight_failure(issue: str, action: str) -> str:
 
 
 def _format_preflight_summary(issues: list[tuple[str, str]]) -> str:
-    lines = ["Preflight identified blocking issues:"]
-    for issue, action in issues:
-        lines.append(issue)
-        lines.append(f"Action required: {action}")
-    return "\n".join(lines)
+    return preflight.format_preflight_summary(issues)
 
 
 def _python_runtime_error() -> str | None:
-    if sys.version_info >= (3, 11):
-        return None
-    return (
-        "Python 3.11+ is required for noraa. "
-        "On Ubuntu 22.04, install python3.11 and python3.11-venv, "
-        "recreate your virtual environment, and reinstall noraa."
-    )
+    return preflight.python_runtime_error()
 
 
 def main():

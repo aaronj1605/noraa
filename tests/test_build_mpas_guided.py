@@ -43,9 +43,13 @@ def test_build_mpas_calls_init_and_verify_with_explicit_values(
     monkeypatch.setattr(cli, "_require_project", lambda _repo: object())
     monkeypatch.setattr(cli, "_confirm_or_fail", lambda **_kwargs: None)
     monkeypatch.setattr(cli, "load_project", lambda _repo: None)
-    monkeypatch.setattr(cli, "bootstrapped_esmf_mk", lambda _repo: tmp_path / "esmf.mk")
     monkeypatch.setattr(
-        cli, "bootstrapped_deps_prefix", lambda _repo: tmp_path / ".noraa" / "deps" / "install"
+        cli.guided_build, "bootstrapped_esmf_mk", lambda _repo: tmp_path / "esmf.mk"
+    )
+    monkeypatch.setattr(
+        cli.guided_build,
+        "bootstrapped_deps_prefix",
+        lambda _repo: tmp_path / ".noraa" / "deps" / "install",
     )
 
     def fake_init(**kwargs):

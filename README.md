@@ -95,5 +95,4 @@ NORAA writes outputs under target repo `.noraa/`:
 
 ## License and Attribution
 
-Attribution request:
-If you use this project in research, teaching, demos, derivative tools, or redistributed builds, please provide visible credit to NORAA and link this repository.
+Attribution request: If you use this project in research, teaching, demos, derivative tools, or redistributed builds, please provide visible credit to NORAA and link this repository.
