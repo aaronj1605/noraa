@@ -18,7 +18,7 @@ sudo apt update
 sudo apt install -y \
   git curl ca-certificates build-essential cmake ninja-build pkg-config \
   gfortran m4 perl flex bison patch rsync file \
-  python3.11 python3.11-venv python3-pip \
+  python3 python3-venv python3-pip \
   openmpi-bin libopenmpi-dev \
   libnetcdf-dev libnetcdff-dev libpnetcdf-dev pnetcdf-bin
 ```
@@ -28,9 +28,11 @@ What these are for:
 - `git curl ca-certificates`: clone/fetch source repositories securely.
 - `build-essential cmake ninja-build pkg-config`: core C/C++/Fortran build tooling.
 - `gfortran m4 perl flex bison patch rsync file`: Fortran preprocessing/generation and utility tools used in dependency and model builds.
-- `python3.11 python3.11-venv python3-pip`: required Python runtime and isolated environment for NORAA.
+- `python3 python3-venv python3-pip`: required Python runtime and isolated environment for NORAA.
 - `openmpi-bin libopenmpi-dev`: MPI runtime/compiler wrappers used by MPAS/UFS builds.
 - `libnetcdf-dev libnetcdff-dev libpnetcdf-dev pnetcdf-bin`: NetCDF/PnetCDF headers/libs and `pnetcdf-config` used by dependency bootstrap.
+
+If your image provides `python3.11`, you can use it explicitly. Otherwise use `python3`.
 
 ## Why Use a venv
 
@@ -46,7 +48,7 @@ mkdir -p ~/work && cd ~/work
 
 git clone https://github.com/aaronj1605/noraa.git
 cd noraa
-python3.11 -m venv .venv
+python3 -m venv .venv
 source .venv/bin/activate
 pip install -U pip
 pip install -e .
@@ -56,17 +58,26 @@ cd ~/work
 git clone --branch develop https://github.com/NOAA-EMC/ufsatm.git
 cd ufsatm
 
-# NORAA workflow
-noraa init
-noraa verify --preflight-only
-noraa bootstrap esmf
-noraa bootstrap deps
-noraa verify
+# NORAA guided workflow (recommended)
+noraa build-mpas --repo ~/work/ufsatm
+```
+
+## Manual Workflow (Advanced)
+
+Use this if you want each stage explicitly:
+
+```bash
+noraa init --repo ~/work/ufsatm
+noraa verify --preflight-only --repo ~/work/ufsatm
+noraa bootstrap esmf --repo ~/work/ufsatm
+noraa bootstrap deps --repo ~/work/ufsatm
+noraa verify --repo ~/work/ufsatm
 ```
 
 ## Command Purpose
 
 - noraa init: create .noraa/project.toml for this ufsatm checkout so NORAA can track repo-local state, logs, and artifacts. Run once per clone.
+- noraa build-mpas: guided one-command path for fresh setups. It prompts through init, submodule update, dependency bootstrap, and MPAS verify.
 - noraa verify --preflight-only: run fast blockers-only checks before a full build. It reports what is missing and the exact next command to run.
 - noraa bootstrap esmf: build ESMF into .noraa/esmf/install so MPAS and UFS can find ESMF without requiring a system-wide install.
 - noraa bootstrap deps: build MPAS and UFS support libraries into .noraa/deps/install so CMake can resolve required packages during verify.
