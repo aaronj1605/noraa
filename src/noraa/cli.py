@@ -27,11 +27,15 @@ from .project import (
 from .snapshot import write_env_snapshot, write_tool_snapshot
 from .util import git_root, log_dir, run_streamed, safe_check_output
 from .validate import validate_mpas_success
-from .workflow import guided_build, preflight
+from .workflow import guided_build, preflight, run_smoke
 
 BASELINE_HELP = "Tested baseline: Linux (Ubuntu 22.04/24.04), Python 3.11+, upstream ufsatm develop.\nUse: noraa <command> --help for command details."
 
 app = typer.Typer(add_completion=False, help=BASELINE_HELP)
+run_smoke_app = typer.Typer(
+    add_completion=False,
+    help="Optional structured smoke-run helpers (readiness, data, execution).",
+)
 
 
 @app.callback()
@@ -39,6 +43,9 @@ def _root_callback() -> None:
     """Tested baseline: Linux (Ubuntu 22.04/24.04), Python 3.11+, upstream ufsatm develop.
     Use: noraa <command> --help for command details."""
     return None
+
+
+app.add_typer(run_smoke_app, name="run-smoke")
 
 
 def _target_repo(path: str) -> Path:
@@ -263,6 +270,15 @@ def build_mpas(
             preflight_only=False,
         ),
     )
+
+
+@run_smoke_app.command("status")
+def run_smoke_status(repo: str = typer.Option(".", "--repo")):
+    """Report readiness for optional run-smoke workflows with RED/GREEN checks."""
+    repo_root = _target_repo(repo)
+    checks = run_smoke.collect_status_checks(repo_root)
+    report, _ = run_smoke.format_status_report(checks)
+    print(report)
 
 
 @app.command()
