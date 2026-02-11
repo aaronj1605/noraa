@@ -392,6 +392,9 @@ def run_smoke_fetch_data_official(
 
     manifest = run_smoke.fetch_official_bundle(repo_root=repo_root, dataset=selected_official)
     _print_fetch_result(repo_root, selected_official.source_repo, selected_official.url, manifest)
+    if not selected_official.runtime_compatible:
+        print("NORAA identified: this official dataset is metadata-only for current ufsatm runtime execution.")
+        print(f"Action required: {repo_cmd(repo_root, 'run-smoke', 'fetch-data', 'local')} --local-path /path/to/ufs-runtime-data --dataset ufs_runtime_case")
 
 
 @run_smoke_fetch_app.command("local")

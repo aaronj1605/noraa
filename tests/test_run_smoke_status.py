@@ -7,7 +7,7 @@ from noraa.workflow import run_smoke
 
 def test_collect_status_checks_not_ready(tmp_path: Path) -> None:
     checks = run_smoke.collect_status_checks(tmp_path)
-    assert len(checks) == 6
+    assert len(checks) == 7
     assert any(not c.ok for c in checks)
     text, all_ok = run_smoke.format_status_report(checks)
     assert all_ok is False
@@ -35,16 +35,19 @@ def test_collect_status_checks_ready(tmp_path: Path) -> None:
     exe.parent.mkdir(parents=True)
     exe.write_text("bin\n")
 
-    data = tmp_path / ".noraa" / "runs" / "smoke" / "data" / "sample_case"
+    data = tmp_path / ".noraa" / "runs" / "smoke" / "data" / "sample_case" / "sample_case"
     data.mkdir(parents=True)
     (data / "sample_init.nc").write_text("x\n")
+    (data / "streams.atmosphere").write_text("&streams\n/\n")
+    (data / "namelist.atmosphere").write_text("&nhyd_model\n config_calendar_type='gregorian'\n/\n")
     manifest = tmp_path / ".noraa" / "runs" / "smoke" / "data" / "dataset.toml"
     manifest.write_text(
         "[dataset]\n"
         'name = "sample_case"\n'
         'source_repo = "https://github.com/NOAA-EMC/ufsatm.git"\n'
         'source_path = "/tmp/sample_init.nc"\n'
-        'ic_file = "sample_case/sample_init.nc"\n'
+        'bundle_dir = "sample_case"\n'
+        "runtime_compatible = true\n"
     )
 
     checks = run_smoke.collect_status_checks(tmp_path)
@@ -97,3 +100,21 @@ def test_discovery_excludes_noraa_esmf_noise(tmp_path: Path, monkeypatch) -> Non
     paths = [str(c.ic_file) for c in candidates]
     assert str(ic) in paths
     assert str(noise) not in paths
+
+
+def test_runtime_compatibility_reports_metadata_only_manifest(tmp_path: Path) -> None:
+    data_root = tmp_path / ".noraa" / "runs" / "smoke" / "data"
+    data_root.mkdir(parents=True, exist_ok=True)
+    (data_root / "dataset.toml").write_text(
+        "[dataset]\n"
+        'name = "supercell"\n'
+        'source_repo = "https://mpas-dev.github.io/atmosphere/test_cases.html"\n'
+        'source_path = "https://example/supercell.tar.gz"\n'
+        'bundle_dir = "supercell"\n'
+        "runtime_compatible = false\n"
+        'runtime_note = "metadata-only"\n'
+    )
+    ok, detail, action = run_smoke.smoke_runtime_compatibility(tmp_path)
+    assert ok is False
+    assert "metadata-only" in detail
+    assert "fetch-data local" in action

@@ -43,6 +43,8 @@ class OfficialDataset:
     url: str
     source_repo: str
     description: str
+    runtime_compatible: bool
+    runtime_note: str
 
 
 @dataclass(frozen=True)
@@ -152,18 +154,33 @@ def official_catalog() -> list[OfficialDataset]:
             url="https://www2.mmm.ucar.edu/projects/mpas/test_cases/v7.0/supercell.tar.gz",
             source_repo="https://mpas-dev.github.io/atmosphere/test_cases.html",
             description="MPAS idealized supercell test-case bundle",
+            runtime_compatible=False,
+            runtime_note=(
+                "MPAS standalone test-case bundle. For NORAA/ufsatm smoke execution this is metadata-only "
+                "unless you provide a UFS-compatible runtime recipe and inputs."
+            ),
         ),
         OfficialDataset(
             dataset_id="mountain_wave",
             url="https://www2.mmm.ucar.edu/projects/mpas/test_cases/v7.0/mountain_wave.tar.gz",
             source_repo="https://mpas-dev.github.io/atmosphere/test_cases.html",
             description="MPAS idealized mountain-wave test-case bundle",
+            runtime_compatible=False,
+            runtime_note=(
+                "MPAS standalone test-case bundle. For NORAA/ufsatm smoke execution this is metadata-only "
+                "unless you provide a UFS-compatible runtime recipe and inputs."
+            ),
         ),
         OfficialDataset(
             dataset_id="jw_baroclinic_wave",
             url="https://www2.mmm.ucar.edu/projects/mpas/test_cases/v7.0/jw_baroclinic_wave.tar.gz",
             source_repo="https://mpas-dev.github.io/atmosphere/test_cases.html",
             description="MPAS idealized Jablonowski-Williamson baroclinic-wave bundle",
+            runtime_compatible=False,
+            runtime_note=(
+                "MPAS standalone test-case bundle. For NORAA/ufsatm smoke execution this is metadata-only "
+                "unless you provide a UFS-compatible runtime recipe and inputs."
+            ),
         ),
     ]
 
@@ -265,7 +282,9 @@ def fetch_official_bundle(*, repo_root: Path, dataset: OfficialDataset) -> Path:
         f'name = "{dataset.dataset_id}"\n'
         f'source_repo = "{source_repo}"\n'
         f'source_path = "{dataset.url}"\n'
-        f'bundle_dir = "{dataset.dataset_id}"\n',
+        f'bundle_dir = "{dataset.dataset_id}"\n'
+        f"runtime_compatible = {str(dataset.runtime_compatible).lower()}\n"
+        f'runtime_note = "{dataset.runtime_note}"\n',
         encoding="utf-8",
     )
     return manifest
@@ -294,10 +313,85 @@ def fetch_local_dataset(*, repo_root: Path, local_path: Path, dataset_name: str 
         f'name = "{dataset_name}"\n'
         'source_repo = "user-local"\n'
         f'source_path = "{local_norm}"\n'
-        f'bundle_dir = "{dataset_name}"\n',
+        f'bundle_dir = "{dataset_name}"\n'
+        "runtime_compatible = true\n"
+        'runtime_note = "User-provided dataset. NORAA will validate required runtime files."\n',
         encoding="utf-8",
     )
     return manifest
+
+
+def _resolve_case_dir(repo_root: Path, dataset: dict) -> Path | None:
+    data_root = _dataset_root(repo_root)
+    bundle_rel = dataset.get("bundle_dir")
+    if not bundle_rel:
+        return None
+    bundle_root = data_root / bundle_rel
+    if not bundle_root.exists():
+        return None
+    name = dataset.get("name")
+    if name:
+        nested = bundle_root / name
+        if nested.exists() and nested.is_dir():
+            return nested
+    return bundle_root
+
+
+def smoke_runtime_compatibility(repo_root: Path) -> tuple[bool, str, str]:
+    manifest = _load_dataset_manifest(repo_root)
+    if manifest is None:
+        return (
+            False,
+            "No dataset manifest found for smoke runtime.",
+            repo_cmd(repo_root, "run-smoke", "fetch-data", "official"),
+        )
+
+    dataset = manifest.get("dataset", {})
+    runtime_flag = dataset.get("runtime_compatible")
+    if runtime_flag is False:
+        note = str(dataset.get("runtime_note") or "Dataset marked metadata-only for runtime.")
+        return (
+            False,
+            note,
+            (
+                f"{repo_cmd(repo_root, 'run-smoke', 'fetch-data', 'local')} --local-path /path/to/ufs-runtime-data "
+                f"--dataset ufs_runtime_case"
+            ),
+        )
+
+    case_dir = _resolve_case_dir(repo_root, dataset)
+    if case_dir is None:
+        return (
+            False,
+            "Dataset manifest does not define a runnable bundle_dir case location.",
+            (
+                f"{repo_cmd(repo_root, 'run-smoke', 'fetch-data', 'local')} --local-path /path/to/ufs-runtime-data "
+                f"--dataset ufs_runtime_case"
+            ),
+        )
+
+    namelist = case_dir / "namelist.atmosphere"
+    streams = case_dir / "streams.atmosphere"
+    if not namelist.exists():
+        return (
+            False,
+            f"Missing runtime file: {namelist}",
+            f"Provide a UFS-compatible dataset with namelist.atmosphere via {repo_cmd(repo_root, 'run-smoke', 'fetch-data', 'local')} --local-path /path/to/ufs-runtime-data",
+        )
+    if not streams.exists():
+        return (
+            False,
+            f"Missing runtime file: {streams}",
+            f"Provide a UFS-compatible dataset with streams.atmosphere via {repo_cmd(repo_root, 'run-smoke', 'fetch-data', 'local')} --local-path /path/to/ufs-runtime-data",
+        )
+    text = namelist.read_text(encoding="utf-8", errors="ignore")
+    if "config_calendar_type" not in text:
+        return (
+            False,
+            "namelist.atmosphere missing config_calendar_type (required for current UFS runtime path).",
+            f"Use UFS-compatible runtime data via {repo_cmd(repo_root, 'run-smoke', 'fetch-data', 'local')} --local-path /path/to/ufs-runtime-data",
+        )
+    return True, str(case_dir), ""
 
 
 def collect_status_checks(repo_root: Path) -> list[StatusCheck]:
@@ -307,6 +401,7 @@ def collect_status_checks(repo_root: Path) -> list[StatusCheck]:
     esmf_mk = bootstrapped_esmf_mk(repo_root)
     mpas_exe = repo_root / ".noraa" / "build" / "bin" / "mpas_atmosphere"
     smoke_ok, smoke_detail = _smoke_data_ready(repo_root)
+    runtime_ok, runtime_detail, runtime_action = smoke_runtime_compatibility(repo_root)
 
     return [
         StatusCheck(
@@ -343,7 +438,13 @@ def collect_status_checks(repo_root: Path) -> list[StatusCheck]:
             name="Smoke-run sample data",
             ok=smoke_ok,
             detail=smoke_detail,
-            action_required=repo_cmd(repo_root, "run-smoke", "fetch-data"),
+            action_required=repo_cmd(repo_root, "run-smoke", "fetch-data", "official"),
+        ),
+        StatusCheck(
+            name="Runtime-compatible smoke dataset",
+            ok=runtime_ok,
+            detail=runtime_detail,
+            action_required=runtime_action or repo_cmd(repo_root, "run-smoke", "fetch-data", "local"),
         ),
     ]
 
