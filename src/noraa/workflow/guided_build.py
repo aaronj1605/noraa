@@ -9,6 +9,7 @@ from ..buildsystem.paths import bootstrapped_deps_prefix, bootstrapped_esmf_mk
 from ..messages import fail, repo_cmd
 from ..project import load_project
 from ..snapshot import write_env_snapshot, write_tool_snapshot
+from ..ui import notice, summary
 from ..util import log_dir, run_streamed
 
 
@@ -36,9 +37,20 @@ def run_build_mpas(
     require_project_fn: Callable[[Path], None],
     verify_fn: Callable[[Path, bool], None],
 ) -> None:
-    print(f"NORAA guided MPAS build for: {repo_root}")
+    notice(
+        "NORAA Guided Build",
+        [
+            f"Repository: {repo_root}",
+            "Goal: initialize, resolve blockers, and verify MPAS build.",
+        ],
+    )
+    fixes: list[str] = []
 
     if load_project(repo_root) is None:
+        notice(
+            "Issue Identified",
+            ["Project is not initialized for NORAA management."],
+        )
         confirm_or_fail(
             prompt="Project is not initialized. Run noraa init now?",
             assume_yes=yes,
@@ -47,10 +59,15 @@ def run_build_mpas(
             confirm_fn=confirm_fn,
         )
         init_project_fn(repo_root)
+        fixes.append("Initialized NORAA project metadata (.noraa/project.toml).")
     require_project_fn(repo_root)
 
     ccpp_prebuild = repo_root / "ccpp" / "framework" / "scripts" / "ccpp_prebuild.py"
     if not ccpp_prebuild.exists():
+        notice(
+            "Issue Identified",
+            [f"Required submodule content is missing: {ccpp_prebuild}"],
+        )
         confirm_or_fail(
             prompt="Required submodule content is missing. Run git submodule update --init --recursive now?",
             assume_yes=yes,
@@ -72,9 +89,14 @@ def run_build_mpas(
                 logs=out,
                 next_step="git submodule update --init --recursive",
             )
-        print("Fix implemented: initialized required git submodules.")
+        fixes.append("Initialized required git submodules.")
+        notice("Fix Implemented", [fixes[-1]])
 
     if bootstrapped_esmf_mk(repo_root) is None:
+        notice(
+            "Issue Identified",
+            ["ESMF dependency is missing under .noraa/esmf/install."],
+        )
         confirm_or_fail(
             prompt="ESMF is missing under .noraa/esmf/install. Bootstrap ESMF now?",
             assume_yes=yes,
@@ -83,9 +105,14 @@ def run_build_mpas(
             confirm_fn=confirm_fn,
         )
         bootstrap_esmf(repo_root, esmf_branch)
-        print("Fix implemented: bootstrapped ESMF under .noraa/esmf/install.")
+        fixes.append("Bootstrapped ESMF under .noraa/esmf/install.")
+        notice("Fix Implemented", [fixes[-1]])
 
     if bootstrapped_deps_prefix(repo_root) is None:
+        notice(
+            "Issue Identified",
+            ["MPAS dependency bundle is missing under .noraa/deps/install."],
+        )
         confirm_or_fail(
             prompt="MPAS dependency bundle is missing under .noraa/deps/install. Bootstrap deps now?",
             assume_yes=yes,
@@ -94,8 +121,12 @@ def run_build_mpas(
             confirm_fn=confirm_fn,
         )
         bootstrap_deps(repo_root)
-        print("Fix implemented: bootstrapped MPAS dependency bundle under .noraa/deps/install.")
+        fixes.append("Bootstrapped MPAS dependency bundle under .noraa/deps/install.")
+        notice("Fix Implemented", [fixes[-1]])
 
-    print("Running verify (MPAS only)...")
+    notice("NORAA Action", ["Running verify (MPAS only)..."])
     verify_fn(repo_root, clean)
-
+    summary(
+        fixes=fixes,
+        next_step=repo_cmd(repo_root, "run-smoke", "status"),
+    )

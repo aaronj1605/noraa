@@ -281,6 +281,75 @@ def run_smoke_status(repo: str = typer.Option(".", "--repo")):
     print(report)
 
 
+@run_smoke_app.command("fetch-data")
+def run_smoke_fetch_data(
+    repo: str = typer.Option(".", "--repo"),
+    dataset: str = typer.Option(
+        None,
+        "--dataset",
+        help="Candidate dataset name from discovered official repo data.",
+    ),
+    yes: bool = typer.Option(False, "--yes", help="Auto-select first candidate."),
+):
+    """
+    Pull smoke-run sample data from official checked-out repos first.
+
+    Sources searched:
+    - target ufsatm checkout
+    - mpas/MPAS-Model submodule (if present)
+    """
+    repo_root = _target_repo(repo)
+    _require_project(repo_root)
+
+    candidates = run_smoke.discover_dataset_candidates(repo_root)
+    if not candidates:
+        fail(
+            "No candidate .nc datasets were discovered in official checked-out repos.",
+            next_step=(
+                f"Add data under {repo_root}/.noraa/runs/smoke/data or provide "
+                f"official sample files in the target repo tree, then rerun "
+                f"{repo_cmd(repo_root, 'run-smoke', 'fetch-data')}"
+            ),
+        )
+
+    selected = None
+    if dataset:
+        for c in candidates:
+            if c.name == dataset:
+                selected = c
+                break
+        if selected is None:
+            names = ", ".join(c.name for c in candidates[:8])
+            fail(
+                f"Dataset '{dataset}' was not found among discovered candidates.",
+                next_step=f"Re-run without --dataset to choose interactively. Example candidates: {names}",
+            )
+    elif yes or len(candidates) == 1:
+        selected = candidates[0]
+    else:
+        print("Discovered dataset candidates:")
+        for i, c in enumerate(candidates, start=1):
+            source = c.source_repo_url or str(c.source_repo_path)
+            print(f"{i}. {c.name}  [source: {source}]")
+            print(f"   ic:  {c.ic_file}")
+            if c.lbc_file:
+                print(f"   lbc: {c.lbc_file}")
+        choice = typer.prompt("Select dataset number", type=int)
+        if choice < 1 or choice > len(candidates):
+            fail(
+                f"Invalid dataset selection: {choice}",
+                next_step=repo_cmd(repo_root, "run-smoke", "fetch-data"),
+            )
+        selected = candidates[choice - 1]
+
+    source = selected.source_repo_url or str(selected.source_repo_path)
+    print(f"Source repository: {source}")
+    print(f"Source path: {selected.ic_file}")
+    manifest = run_smoke.fetch_dataset(repo_root=repo_root, candidate=selected)
+    print(f"Dataset manifest written: {manifest}")
+    print(f"Next step: {repo_cmd(repo_root, 'run-smoke', 'status')}")
+
+
 @app.command()
 def diagnose(
     repo: str = typer.Option(".", "--repo"),

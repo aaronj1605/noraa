@@ -35,9 +35,17 @@ def test_collect_status_checks_ready(tmp_path: Path) -> None:
     exe.parent.mkdir(parents=True)
     exe.write_text("bin\n")
 
-    data = tmp_path / ".noraa" / "runs" / "smoke" / "data"
+    data = tmp_path / ".noraa" / "runs" / "smoke" / "data" / "sample_case"
     data.mkdir(parents=True)
-    (data / "sample.nc").write_text("x\n")
+    (data / "sample_init.nc").write_text("x\n")
+    manifest = tmp_path / ".noraa" / "runs" / "smoke" / "data" / "dataset.toml"
+    manifest.write_text(
+        "[dataset]\n"
+        'name = "sample_case"\n'
+        'source_repo = "https://github.com/NOAA-EMC/ufsatm.git"\n'
+        'source_path = "/tmp/sample_init.nc"\n'
+        'ic_file = "sample_case/sample_init.nc"\n'
+    )
 
     checks = run_smoke.collect_status_checks(tmp_path)
     assert all(c.ok for c in checks)
@@ -46,3 +54,27 @@ def test_collect_status_checks_ready(tmp_path: Path) -> None:
     assert "GREEN: Project initialized" in text
     assert "READY: all required checks passed." in text
 
+
+def test_discover_dataset_candidates_and_fetch(tmp_path: Path, monkeypatch) -> None:
+    # Simulate official repo origin lookup
+    monkeypatch.setattr(run_smoke, "_git_origin", lambda _p: "https://github.com/NOAA-EMC/ufsatm.git")
+
+    ic = tmp_path / "tests" / "data" / "smoke_init.nc"
+    lbc = tmp_path / "tests" / "data" / "smoke_lbc.nc"
+    ic.parent.mkdir(parents=True)
+    ic.write_text("ic\n")
+    lbc.write_text("lbc\n")
+
+    candidates = run_smoke.discover_dataset_candidates(tmp_path)
+    assert candidates
+    selected = candidates[0]
+    manifest = run_smoke.fetch_dataset(repo_root=tmp_path, candidate=selected)
+
+    assert manifest.exists()
+    text = manifest.read_text(encoding="utf-8")
+    assert "source_repo" in text
+    assert "ic_file" in text
+
+    checks = run_smoke.collect_status_checks(tmp_path)
+    smoke_check = next(c for c in checks if c.name == "Smoke-run sample data")
+    assert smoke_check.ok is True
