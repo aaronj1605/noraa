@@ -27,7 +27,7 @@ from .project import (
 from .snapshot import write_env_snapshot, write_tool_snapshot
 from .util import git_root, log_dir, run_streamed, safe_check_output
 from .validate import validate_mpas_success
-from .workflow import guided_build, preflight, run_smoke
+from .workflow import guided_build, preflight, run_smoke_cli
 
 BASELINE_HELP = "Tested baseline: Linux (Ubuntu 22.04/24.04), Python 3.11+, upstream ufsatm develop.\nUse: noraa <command> --help for command details."
 
@@ -281,24 +281,7 @@ def build_mpas(
 def run_smoke_status(repo: str = typer.Option(".", "--repo")):
     """Report readiness for optional run-smoke workflows with RED/GREEN checks."""
     repo_root = _target_repo(repo)
-    checks = run_smoke.collect_status_checks(repo_root)
-    report, _ = run_smoke.format_status_report(checks)
-    print(report)
-
-
-def _print_fetch_result(
-    repo_root: Path,
-    source_repo: str,
-    source_path: str,
-    manifest: Path,
-    citation: str | None = None,
-) -> None:
-    print(f"Source repository: {source_repo}")
-    print(f"Source path: {source_path}")
-    if citation:
-        print(f"Citation: {citation}")
-    print(f"Dataset manifest written: {manifest}")
-    print(f"Run this command next: {repo_cmd(repo_root, 'run-smoke', 'status')}")
+    run_smoke_cli.status(repo_root)
 
 
 @run_smoke_fetch_app.command("scan")
@@ -314,49 +297,12 @@ def run_smoke_fetch_data_scan(
     """Discover candidate `.nc` data in checked-out repos and register one dataset."""
     repo_root = _target_repo(repo)
     _require_project(repo_root)
-    candidates = run_smoke.discover_dataset_candidates(repo_root)
-    if not candidates:
-        fail(
-            "No candidate .nc datasets were discovered in official checked-out repos.",
-            next_step=(
-                f"Try curated data: {repo_cmd(repo_root, 'run-smoke', 'fetch-data', 'official')} "
-                f"or local files: {repo_cmd(repo_root, 'run-smoke', 'fetch-data', 'local')} --local-path /path/to/data"
-            ),
-        )
-
-    selected = None
-    if dataset:
-        for c in candidates:
-            if c.name == dataset:
-                selected = c
-                break
-        if selected is None:
-            names = ", ".join(c.name for c in candidates[:8])
-            fail(
-                f"Dataset '{dataset}' was not found among discovered candidates.",
-                next_step=f"Re-run without --dataset to choose interactively. Example candidates: {names}",
-            )
-    elif yes or len(candidates) == 1:
-        selected = candidates[0]
-    else:
-        print("Discovered dataset candidates:")
-        for i, c in enumerate(candidates, start=1):
-            source_repo = c.source_repo_url or str(c.source_repo_path)
-            print(f"{i}. {c.name}  [source: {source_repo}]")
-            print(f"   ic:  {c.ic_file}")
-            if c.lbc_file:
-                print(f"   lbc: {c.lbc_file}")
-        choice = typer.prompt("Select dataset number", type=int)
-        if choice < 1 or choice > len(candidates):
-            fail(
-                f"Invalid dataset selection: {choice}",
-                next_step=repo_cmd(repo_root, "run-smoke", "fetch-data", "scan"),
-            )
-        selected = candidates[choice - 1]
-
-    source_repo = selected.source_repo_url or str(selected.source_repo_path)
-    manifest = run_smoke.fetch_dataset(repo_root=repo_root, candidate=selected)
-    _print_fetch_result(repo_root, source_repo, str(selected.ic_file), manifest)
+    run_smoke_cli.fetch_scan(
+        repo_root=repo_root,
+        dataset=dataset,
+        yes=yes,
+        prompt_int=lambda msg: typer.prompt(msg, type=int),
+    )
 
 
 @run_smoke_fetch_app.command("official")
@@ -372,37 +318,12 @@ def run_smoke_fetch_data_official(
     """Select from curated official MPAS test-case bundles and register metadata."""
     repo_root = _target_repo(repo)
     _require_project(repo_root)
-    catalog = run_smoke.official_catalog()
-    selected_official = None
-    if dataset:
-        selected_official = run_smoke.resolve_official_dataset(dataset)
-        if selected_official is None:
-            ids = ", ".join(ds.dataset_id for ds in catalog)
-            fail(
-                f"Unknown official dataset id: {dataset}",
-                next_step=f"Use one of: {ids}",
-            )
-    elif yes or len(catalog) == 1:
-        selected_official = catalog[0]
-    else:
-        print("Official dataset options:")
-        for i, ds in enumerate(catalog, start=1):
-            print(f"{i}. {ds.dataset_id}  [source: {ds.source_repo}]")
-            print(f"   {ds.description}")
-            print(f"   url: {ds.url}")
-        choice = typer.prompt("Select official dataset number", type=int)
-        if choice < 1 or choice > len(catalog):
-            fail(
-                f"Invalid dataset selection: {choice}",
-                next_step=repo_cmd(repo_root, "run-smoke", "fetch-data", "official"),
-            )
-        selected_official = catalog[choice - 1]
-
-    manifest = run_smoke.fetch_official_bundle(repo_root=repo_root, dataset=selected_official)
-    _print_fetch_result(repo_root, selected_official.source_repo, selected_official.url, manifest)
-    if not selected_official.runtime_compatible:
-        print("NORAA identified: this official dataset is metadata-only for current ufsatm runtime execution.")
-        print(f"Action required: {repo_cmd(repo_root, 'run-smoke', 'fetch-data', 'local')} --local-path /path/to/ufs-runtime-data --dataset ufs_runtime_case")
+    run_smoke_cli.fetch_official(
+        repo_root=repo_root,
+        dataset=dataset,
+        yes=yes,
+        prompt_int=lambda msg: typer.prompt(msg, type=int),
+    )
 
 
 @run_smoke_fetch_app.command("official-ufs")
@@ -417,32 +338,7 @@ def run_smoke_fetch_data_official_ufs(
     """Fetch UFS/HTF case data from noaa-ufs-htf-pds and record required citation."""
     repo_root = _target_repo(repo)
     _require_project(repo_root)
-    if shutil.which("aws") is None:
-        fail(
-            "NORAA identified: aws CLI is required for official-ufs dataset fetch.",
-            next_step="python -m pip install -U awscli",
-        )
-
-    try:
-        manifest = run_smoke.fetch_official_ufs_prefix(
-            repo_root=repo_root,
-            s3_prefix=s3_prefix,
-            aws_bin="aws",
-        )
-    except Exception as e:
-        fail(
-            f"HTF dataset fetch failed: {e}",
-            next_step=f"{repo_cmd(repo_root, 'run-smoke', 'fetch-data', 'official-ufs')} --s3-prefix <prefix>",
-        )
-
-    citation = run_smoke.htf_citation(run_smoke.current_utc_date())
-    _print_fetch_result(
-        repo_root,
-        run_smoke.HTF_REGISTRY_URL,
-        f"{run_smoke.HTF_BUCKET}/{s3_prefix.strip().strip('/')}/",
-        manifest,
-        citation=citation,
-    )
+    run_smoke_cli.fetch_official_ufs(repo_root=repo_root, s3_prefix=s3_prefix)
 
 
 @run_smoke_fetch_app.command("local")
@@ -462,14 +358,7 @@ def run_smoke_fetch_data_local(
     """Register user-provided local dataset files under `.noraa/runs/smoke/data`."""
     repo_root = _target_repo(repo)
     _require_project(repo_root)
-    p = Path(local_path).expanduser().resolve()
-    if not p.exists():
-        fail(
-            f"Local data path does not exist: {p}",
-            next_step=f"{repo_cmd(repo_root, 'run-smoke', 'fetch-data', 'local')} --local-path /path/to/data",
-        )
-    manifest = run_smoke.fetch_local_dataset(repo_root=repo_root, local_path=p, dataset_name=dataset)
-    _print_fetch_result(repo_root, "user-local", str(p), manifest)
+    run_smoke_cli.fetch_local(repo_root=repo_root, local_path=local_path, dataset=dataset)
 
 
 @run_smoke_app.command("execute")
@@ -485,35 +374,7 @@ def run_smoke_execute(
     """Run a short structured smoke execution probe after readiness is GREEN."""
     repo_root = _target_repo(repo)
     _require_project(repo_root)
-
-    checks = run_smoke.collect_status_checks(repo_root)
-    _, ready = run_smoke.format_status_report(checks)
-    if not ready:
-        next_cmd = run_smoke.first_blocking_action(checks) or repo_cmd(
-            repo_root, "run-smoke", "status"
-        )
-        fail(
-            "Run-smoke execute is blocked because readiness is not GREEN.",
-            next_step=next_cmd,
-        )
-
-    result = run_smoke.execute_smoke(
-        repo_root=repo_root, timeout_sec=timeout_sec, command_text=command
-    )
-    print("NORAA run-smoke execution summary:")
-    print(f"Run directory: {result.run_dir}")
-    print(f"Command: {' '.join(result.command)}")
-    print(f"Result: {'PASS' if result.ok else 'FAIL'}")
-    print(f"Details: {result.reason}")
-    print(f"Logs: {result.run_dir}")
-    if result.ok:
-        print(f"Run this command next: {repo_cmd(repo_root, 'run-smoke', 'status')}")
-        return
-    fail(
-        "Run-smoke execute failed.",
-        next_step=repo_cmd(repo_root, "run-smoke", "execute"),
-        logs=result.run_dir,
-    )
+    run_smoke_cli.execute(repo_root=repo_root, timeout_sec=timeout_sec, command=command)
 
 
 @app.command()
