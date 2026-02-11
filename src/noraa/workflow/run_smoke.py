@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import shutil
+import tarfile
+import urllib.request
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -29,6 +31,14 @@ class DatasetCandidate:
     lbc_file: Path | None
     source_repo_path: Path
     source_repo_url: str
+
+
+@dataclass(frozen=True)
+class OfficialDataset:
+    dataset_id: str
+    url: str
+    source_repo: str
+    description: str
 
 
 def _git_origin(path: Path) -> str:
@@ -121,6 +131,37 @@ def _load_dataset_manifest(repo_root: Path) -> dict | None:
         return None
 
 
+def official_catalog() -> list[OfficialDataset]:
+    # Curated official MPAS test-case bundles.
+    return [
+        OfficialDataset(
+            dataset_id="supercell",
+            url="https://www2.mmm.ucar.edu/projects/mpas/test_cases/v7.0/supercell.tar.gz",
+            source_repo="https://mpas-dev.github.io/atmosphere/test_cases.html",
+            description="MPAS idealized supercell test-case bundle",
+        ),
+        OfficialDataset(
+            dataset_id="mountain_wave",
+            url="https://www2.mmm.ucar.edu/projects/mpas/test_cases/v7.0/mountain_wave.tar.gz",
+            source_repo="https://mpas-dev.github.io/atmosphere/test_cases.html",
+            description="MPAS idealized mountain-wave test-case bundle",
+        ),
+        OfficialDataset(
+            dataset_id="jw_baroclinic_wave",
+            url="https://www2.mmm.ucar.edu/projects/mpas/test_cases/v7.0/jw_baroclinic_wave.tar.gz",
+            source_repo="https://mpas-dev.github.io/atmosphere/test_cases.html",
+            description="MPAS idealized Jablonowski-Williamson baroclinic-wave bundle",
+        ),
+    ]
+
+
+def resolve_official_dataset(dataset_id: str) -> OfficialDataset | None:
+    for ds in official_catalog():
+        if ds.dataset_id == dataset_id:
+            return ds
+    return None
+
+
 def _smoke_data_ready(repo_root: Path) -> tuple[bool, str]:
     manifest = _load_dataset_manifest(repo_root)
     root = _dataset_root(repo_root)
@@ -128,6 +169,13 @@ def _smoke_data_ready(repo_root: Path) -> tuple[bool, str]:
         return False, str(root)
 
     dataset = manifest.get("dataset", {})
+    bundle_rel = dataset.get("bundle_dir")
+    if bundle_rel:
+        bundle_path = root / bundle_rel
+        if bundle_path.exists() and any(bundle_path.rglob("*")):
+            return True, str(_dataset_manifest_path(repo_root))
+        return False, str(bundle_path)
+
     ic_rel = dataset.get("ic_file")
     if not ic_rel:
         return False, str(root)
@@ -178,6 +226,62 @@ def fetch_dataset(
         f'source_path = "{source_path}"\n'
         f'ic_file = "{candidate.name}/{candidate.ic_file.name}"\n'
         f"{lbc_line}",
+        encoding="utf-8",
+    )
+    return manifest
+
+
+def fetch_official_bundle(*, repo_root: Path, dataset: OfficialDataset) -> Path:
+    data_root = _dataset_root(repo_root)
+    data_root.mkdir(parents=True, exist_ok=True)
+    bundle_dir = data_root / dataset.dataset_id
+    bundle_dir.mkdir(parents=True, exist_ok=True)
+
+    archive_name = dataset.url.split("/")[-1] or f"{dataset.dataset_id}.tar.gz"
+    archive_path = bundle_dir / archive_name
+    urllib.request.urlretrieve(dataset.url, archive_path)
+
+    if archive_name.endswith(".tar.gz"):
+        with tarfile.open(archive_path, "r:gz") as tf:
+            tf.extractall(path=bundle_dir)
+
+    manifest = _dataset_manifest_path(repo_root)
+    source_repo = dataset.source_repo.replace("\\", "/")
+    manifest.write_text(
+        "[dataset]\n"
+        f'name = "{dataset.dataset_id}"\n'
+        f'source_repo = "{source_repo}"\n'
+        f'source_path = "{dataset.url}"\n'
+        f'bundle_dir = "{dataset.dataset_id}"\n',
+        encoding="utf-8",
+    )
+    return manifest
+
+
+def fetch_local_dataset(*, repo_root: Path, local_path: Path, dataset_name: str = "local_user_data") -> Path:
+    data_root = _dataset_root(repo_root)
+    data_root.mkdir(parents=True, exist_ok=True)
+    target_dir = data_root / dataset_name
+    target_dir.mkdir(parents=True, exist_ok=True)
+
+    if local_path.is_dir():
+        for item in local_path.iterdir():
+            dest = target_dir / item.name
+            if item.is_dir():
+                shutil.copytree(item, dest, dirs_exist_ok=True)
+            else:
+                shutil.copy2(item, dest)
+    else:
+        shutil.copy2(local_path, target_dir / local_path.name)
+
+    manifest = _dataset_manifest_path(repo_root)
+    local_norm = str(local_path).replace("\\", "/")
+    manifest.write_text(
+        "[dataset]\n"
+        f'name = "{dataset_name}"\n'
+        'source_repo = "user-local"\n'
+        f'source_path = "{local_norm}"\n'
+        f'bundle_dir = "{dataset_name}"\n',
         encoding="utf-8",
     )
     return manifest
