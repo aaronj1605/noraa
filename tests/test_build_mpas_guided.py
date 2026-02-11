@@ -27,7 +27,7 @@ def test_confirm_or_fail_raises_when_user_declines(monkeypatch) -> None:
         )
     text = str(excinfo.value)
     assert "blocked" in text
-    assert "Next step: noraa init" in text
+    assert "Run this command next: noraa init" in text
 
 
 def test_build_mpas_calls_init_and_verify_with_explicit_values(

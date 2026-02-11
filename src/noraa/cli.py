@@ -184,7 +184,7 @@ def verify(
         )
         (out / "diagnosis.txt").write_text(msg)
         print(msg, end="")
-        print(f"\nNext step: noraa diagnose --repo {repo_root} --log-dir {out}")
+        print(f"\nRun this command next: noraa diagnose --repo {repo_root} --log-dir {out}")
         raise SystemExit(code)
 
     print(f"VERIFY PASSED. Logs: {out}")

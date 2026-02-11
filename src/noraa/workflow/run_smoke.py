@@ -350,7 +350,7 @@ def collect_status_checks(repo_root: Path) -> list[StatusCheck]:
 
 def format_status_report(checks: list[StatusCheck]) -> tuple[str, bool]:
     all_ok = all(c.ok for c in checks)
-    lines = ["Run-smoke readiness status:"]
+    lines = ["NORAA run-smoke readiness status:"]
     for c in checks:
         flag = "GREEN" if c.ok else "RED"
         lines.append(f"{flag}: {c.name} [{c.detail}]")

@@ -97,7 +97,7 @@ def bootstrap_esmf(repo_root: Path, esmf_branch: str) -> None:
     (out / "esmf_mkfile.txt").write_text(str(mk) + "\n")
     print(f"ESMF installed under {inst}")
     print(f"Detected esmf.mk at: {mk}")
-    print(f"Next step: {repo_cmd(repo_root, 'bootstrap', 'deps')}")
+    print(f"Run this command next: {repo_cmd(repo_root, 'bootstrap', 'deps')}")
     print(f"Then run: {repo_cmd(repo_root, 'verify')}")
 
 

@@ -24,5 +24,4 @@ def test_fail_includes_logs_and_next_step() -> None:
     text = str(excinfo.value)
     assert "Something failed" in text
     assert "Logs: /tmp/logs/run" in text
-    assert "Next step: noraa diagnose --repo /tmp/ufsatm" in text
-
+    assert "Run this command next: noraa diagnose --repo /tmp/ufsatm" in text

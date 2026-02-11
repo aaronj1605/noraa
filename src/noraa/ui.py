@@ -32,6 +32,5 @@ def summary(*, fixes: list[str], next_step: str) -> None:
     else:
         lines.append("No automatic fixes were required in this run.")
     lines.append("")
-    lines.append(f"Next step: {next_step}")
+    lines.append(f"Run this command next: {next_step}")
     notice("NORAA Summary", lines)
-

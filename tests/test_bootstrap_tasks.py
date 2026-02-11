@@ -26,7 +26,7 @@ def test_bootstrap_esmf_prints_next_steps(tmp_path: Path, monkeypatch, capsys) -
     tasks.bootstrap_esmf(repo_root, "v8.6.1")
 
     text = capsys.readouterr().out
-    assert "Next step: noraa bootstrap deps --repo" in text
+    assert "Run this command next: noraa bootstrap deps --repo" in text
     assert "Then run: noraa verify --repo" in text
 
 

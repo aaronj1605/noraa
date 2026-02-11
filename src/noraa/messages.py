@@ -18,5 +18,5 @@ def fail(message: str, *, next_step: str | None = None, logs: Path | None = None
     if logs is not None:
         lines.append(f"Logs: {_fmt_path(logs)}")
     if next_step:
-        lines.append(f"Next step: {next_step}")
+        lines.append(f"Run this command next: {next_step}")
     raise SystemExit("\n".join(lines))
