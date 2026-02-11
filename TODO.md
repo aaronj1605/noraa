@@ -4,3 +4,4 @@
 - Refactor `noraa run-smoke fetch-data --help` UX to look command-oriented like top-level `noraa --help`.
 - Reduce dense option-heavy screens where possible; prefer clearer subcommand flows and concise descriptions.
 - Ensure help text presents "what to run next" in a consistent format across CLI sections.
+- Replace generic `TEXT` type labels in subcommand help with cleaner UX (prefer command menus or domain-specific metavars).
