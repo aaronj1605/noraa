@@ -6,6 +6,7 @@ import subprocess
 import shutil
 import tarfile
 import urllib.request
+import hashlib
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
@@ -48,6 +49,7 @@ class OfficialDataset:
     description: str
     runtime_compatible: bool
     runtime_note: str
+    sha256: str | None = None
 
 
 @dataclass(frozen=True)
@@ -91,6 +93,58 @@ def _search_roots(repo_root: Path) -> list[tuple[Path, str]]:
 
 def _candidate_name(path: Path) -> str:
     return path.stem.replace(" ", "_")
+
+
+def _sanitize_dataset_name(name: str) -> str:
+    cleaned = (name or "").strip()
+    if not cleaned:
+        raise ValueError("dataset name cannot be empty")
+    if cleaned in {".", ".."}:
+        raise ValueError("dataset name cannot be '.' or '..'")
+    if "/" in cleaned or "\\" in cleaned:
+        raise ValueError("dataset name cannot contain path separators")
+    return cleaned
+
+
+def _sha256_file(path: Path) -> str:
+    h = hashlib.sha256()
+    with path.open("rb") as fh:
+        while True:
+            chunk = fh.read(1024 * 1024)
+            if not chunk:
+                break
+            h.update(chunk)
+    return h.hexdigest()
+
+
+def _safe_extract_tar_gz(archive_path: Path, dest_dir: Path) -> None:
+    dest_resolved = dest_dir.resolve()
+    with tarfile.open(archive_path, "r:gz") as tf:
+        members = tf.getmembers()
+        for member in members:
+            name = member.name
+            if name.startswith("/") or name.startswith("\\"):
+                raise ValueError(f"Unsafe archive member path: {name}")
+            if member.issym() or member.islnk():
+                raise ValueError(f"Unsafe archive member link: {name}")
+            target = (dest_dir / name).resolve()
+            if not str(target).startswith(str(dest_resolved) + os.sep) and target != dest_resolved:
+                raise ValueError(f"Unsafe archive member traversal: {name}")
+        tf.extractall(path=dest_dir, members=members)
+
+
+def _validate_s3_prefix(prefix: str) -> str:
+    cleaned = prefix.strip().strip("/")
+    if not cleaned:
+        raise ValueError("s3_prefix cannot be empty")
+    if cleaned.startswith("s3://"):
+        raise ValueError("s3_prefix must be bucket-relative, not a full s3:// URL")
+    if "\\" in cleaned:
+        raise ValueError("s3_prefix cannot contain backslashes")
+    parts = cleaned.split("/")
+    if any(part in {"", ".", ".."} for part in parts):
+        raise ValueError("s3_prefix contains unsafe path segments")
+    return cleaned
 
 
 def _looks_like_ic_file(nc: Path) -> bool:
@@ -278,25 +332,32 @@ def fetch_dataset(
 def fetch_official_bundle(*, repo_root: Path, dataset: OfficialDataset) -> Path:
     data_root = _dataset_root(repo_root)
     data_root.mkdir(parents=True, exist_ok=True)
-    bundle_dir = data_root / dataset.dataset_id
+    safe_id = _sanitize_dataset_name(dataset.dataset_id)
+    bundle_dir = data_root / safe_id
     bundle_dir.mkdir(parents=True, exist_ok=True)
 
-    archive_name = dataset.url.split("/")[-1] or f"{dataset.dataset_id}.tar.gz"
+    archive_name = dataset.url.split("/")[-1] or f"{safe_id}.tar.gz"
     archive_path = bundle_dir / archive_name
     urllib.request.urlretrieve(dataset.url, archive_path)
+    archive_sha256 = _sha256_file(archive_path)
+    if dataset.sha256 and archive_sha256.lower() != dataset.sha256.lower():
+        raise ValueError(
+            f"Downloaded archive hash mismatch for {safe_id}: "
+            f"expected {dataset.sha256}, got {archive_sha256}"
+        )
 
     if archive_name.endswith(".tar.gz"):
-        with tarfile.open(archive_path, "r:gz") as tf:
-            tf.extractall(path=bundle_dir)
+        _safe_extract_tar_gz(archive_path, bundle_dir)
 
     manifest = _dataset_manifest_path(repo_root)
     source_repo = dataset.source_repo.replace("\\", "/")
     manifest.write_text(
         "[dataset]\n"
-        f'name = "{dataset.dataset_id}"\n'
+        f'name = "{safe_id}"\n'
         f'source_repo = "{source_repo}"\n'
         f'source_path = "{dataset.url}"\n'
-        f'bundle_dir = "{dataset.dataset_id}"\n'
+        f'bundle_dir = "{safe_id}"\n'
+        f'archive_sha256 = "{archive_sha256}"\n'
         f"runtime_compatible = {str(dataset.runtime_compatible).lower()}\n"
         f'runtime_note = "{dataset.runtime_note}"\n',
         encoding="utf-8",
@@ -314,10 +375,8 @@ def fetch_official_ufs_prefix(
     data_root = _dataset_root(repo_root)
     data_root.mkdir(parents=True, exist_ok=True)
 
-    prefix = s3_prefix.strip().strip("/")
-    if not prefix:
-        raise ValueError("s3_prefix cannot be empty")
-    dataset_id = prefix.split("/")[-1]
+    prefix = _validate_s3_prefix(s3_prefix)
+    dataset_id = _sanitize_dataset_name(prefix.split("/")[-1])
     bundle_dir = data_root / dataset_id
     bundle_dir.mkdir(parents=True, exist_ok=True)
 
@@ -348,27 +407,32 @@ def fetch_official_ufs_prefix(
 def fetch_local_dataset(*, repo_root: Path, local_path: Path, dataset_name: str = "local_user_data") -> Path:
     data_root = _dataset_root(repo_root)
     data_root.mkdir(parents=True, exist_ok=True)
-    target_dir = data_root / dataset_name
+    safe_name = _sanitize_dataset_name(dataset_name)
+    target_dir = data_root / safe_name
     target_dir.mkdir(parents=True, exist_ok=True)
 
     if local_path.is_dir():
         for item in local_path.iterdir():
+            if item.is_symlink():
+                continue
             dest = target_dir / item.name
             if item.is_dir():
                 shutil.copytree(item, dest, dirs_exist_ok=True)
             else:
                 shutil.copy2(item, dest)
     else:
+        if local_path.is_symlink():
+            raise ValueError("local_path cannot be a symlink")
         shutil.copy2(local_path, target_dir / local_path.name)
 
     manifest = _dataset_manifest_path(repo_root)
     local_norm = str(local_path).replace("\\", "/")
     manifest.write_text(
         "[dataset]\n"
-        f'name = "{dataset_name}"\n'
+        f'name = "{safe_name}"\n'
         'source_repo = "user-local"\n'
         f'source_path = "{local_norm}"\n'
-        f'bundle_dir = "{dataset_name}"\n'
+        f'bundle_dir = "{safe_name}"\n'
         "runtime_compatible = true\n"
         'runtime_note = "User-provided dataset. NORAA will validate required runtime files."\n',
         encoding="utf-8",
