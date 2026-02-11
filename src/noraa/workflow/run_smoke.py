@@ -392,6 +392,34 @@ def _resolve_case_dir(repo_root: Path, dataset: dict) -> Path | None:
     return bundle_root
 
 
+def _known_standalone_case_note(case_dir: Path, dataset: dict) -> str | None:
+    source_repo = str(dataset.get("source_repo") or "").lower()
+    source_path = str(dataset.get("source_path") or "").lower()
+    if "mpas-dev.github.io/atmosphere/test_cases.html" in source_repo:
+        return (
+            "Dataset appears to be an MPAS standalone test-case bundle and is not directly "
+            "runtime-compatible with current ufsatm MPAS smoke execution."
+        )
+    # Local copies of MPAS standalone bundles are commonly identified by these files.
+    standalone_markers = [
+        case_dir / "supercell.ncl",
+        case_dir / "supercell.graph.info",
+        case_dir / "namelist.init_atmosphere",
+        case_dir / "streams.init_atmosphere",
+    ]
+    if sum(1 for p in standalone_markers if p.exists()) >= 2:
+        return (
+            "Dataset matches MPAS standalone case layout; NORAA execute for ufsatm MPAS is "
+            "blocked to avoid known streams/time parser incompatibilities."
+        )
+    if "supercell" in source_path and (case_dir / "supercell.graph.info").exists():
+        return (
+            "Supercell standalone dataset detected; this is not directly runtime-compatible "
+            "with current ufsatm MPAS smoke execution."
+        )
+    return None
+
+
 def smoke_runtime_compatibility(repo_root: Path) -> tuple[bool, str, str]:
     manifest = _load_dataset_manifest(repo_root)
     if manifest is None:
@@ -419,6 +447,17 @@ def smoke_runtime_compatibility(repo_root: Path) -> tuple[bool, str, str]:
         return (
             False,
             "Dataset manifest does not define a runnable bundle_dir case location.",
+            (
+                f"{repo_cmd(repo_root, 'run-smoke', 'fetch-data', 'local')} --local-path /path/to/ufs-runtime-data "
+                f"--dataset ufs_runtime_case"
+            ),
+        )
+
+    standalone_note = _known_standalone_case_note(case_dir, dataset)
+    if standalone_note is not None:
+        return (
+            False,
+            standalone_note,
             (
                 f"{repo_cmd(repo_root, 'run-smoke', 'fetch-data', 'local')} --local-path /path/to/ufs-runtime-data "
                 f"--dataset ufs_runtime_case"

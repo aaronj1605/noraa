@@ -120,6 +120,27 @@ def test_runtime_compatibility_reports_metadata_only_manifest(tmp_path: Path) ->
     assert "fetch-data local" in action
 
 
+def test_runtime_compatibility_blocks_standalone_supercell_layout(tmp_path: Path) -> None:
+    case_dir = tmp_path / ".noraa" / "runs" / "smoke" / "data" / "supercell_local"
+    case_dir.mkdir(parents=True, exist_ok=True)
+    (case_dir / "supercell.ncl").write_text("x\n")
+    (case_dir / "supercell.graph.info").write_text("x\n")
+    (case_dir / "namelist.init_atmosphere").write_text("&x\n/\n")
+    (case_dir / "streams.init_atmosphere").write_text("<streams/>\n")
+    (tmp_path / ".noraa" / "runs" / "smoke" / "data" / "dataset.toml").write_text(
+        "[dataset]\n"
+        'name = "supercell_local"\n'
+        'source_repo = "user-local"\n'
+        'source_path = "/tmp/supercell"\n'
+        'bundle_dir = "supercell_local"\n'
+        "runtime_compatible = true\n"
+    )
+    ok, detail, action = run_smoke.smoke_runtime_compatibility(tmp_path)
+    assert ok is False
+    assert "standalone" in detail.lower()
+    assert "fetch-data local" in action
+
+
 def test_fetch_official_ufs_prefix_writes_manifest_with_citation(
     tmp_path: Path, monkeypatch
 ) -> None:
