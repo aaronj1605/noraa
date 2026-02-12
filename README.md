@@ -88,12 +88,6 @@ noraa verify --repo ~/work/ufsatm
 - noraa run-smoke fetch-data official-ufs: fetch case data from `noaa-ufs-htf-pds` (AWS Open Data) and record required citation metadata.
 - noraa run-smoke execute: run a short, structured smoke execution probe after readiness is GREEN and write command/stdout/stderr/result under .noraa/runs/smoke/exec/.
 
-## HTF Citation
-
-For datasets fetched from `noaa-ufs-htf-pds`, NORAA prints and records:
-
-`NOAA Unified Forecast System (UFS) Hierarchical Testing Framework (HTF) was accessed on YYYY-MM-DD from https://registry.opendata.aws/noaa-ufs-htf-pds.`
-
 ## Logs and Artifacts
 
 NORAA writes outputs under target repo `.noraa/`:
