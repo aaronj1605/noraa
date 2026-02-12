@@ -4,6 +4,7 @@ import os
 import shlex
 import subprocess
 import shutil
+import re
 import tarfile
 import urllib.request
 import hashlib
@@ -22,6 +23,8 @@ from ..util import safe_check_output
 
 HTF_REGISTRY_URL = "https://registry.opendata.aws/noaa-ufs-htf-pds"
 HTF_BUCKET = "s3://noaa-ufs-htf-pds"
+REGTESTS_SOURCE_URL = "https://noaa-ufs-regtests-pds.s3.amazonaws.com"
+REGTESTS_BUCKET = "s3://noaa-ufs-regtests-pds"
 
 
 @dataclass(frozen=True)
@@ -414,11 +417,49 @@ def fetch_official_ufs_prefix(
     return manifest
 
 
+def fetch_official_regtests_prefix(
+    *,
+    repo_root: Path,
+    s3_prefix: str,
+    aws_bin: str = "aws",
+) -> Path:
+    data_root = _dataset_root(repo_root)
+    data_root.mkdir(parents=True, exist_ok=True)
+
+    prefix = _validate_s3_prefix(s3_prefix)
+    dataset_id = _sanitize_dataset_name(prefix.replace("/", "_"))
+    bundle_dir = data_root / dataset_id
+    bundle_dir.mkdir(parents=True, exist_ok=True)
+
+    source_path = f"{REGTESTS_BUCKET}/{prefix}/"
+    subprocess.run(
+        [aws_bin, "s3", "cp", "--recursive", "--no-sign-request", source_path, str(bundle_dir)],
+        check=True,
+        text=True,
+    )
+
+    manifest = _dataset_manifest_path(repo_root)
+    manifest.write_text(
+        "[dataset]\n"
+        f'name = "{dataset_id}"\n'
+        f'source_repo = "{REGTESTS_SOURCE_URL}"\n'
+        f'source_path = "{source_path}"\n'
+        f'bundle_dir = "{dataset_id}"\n'
+        "runtime_compatible = true\n"
+        'runtime_note = "Fetched from noaa-ufs-regtests-pds. NORAA will validate required runtime files."\n',
+        encoding="utf-8",
+    )
+    return manifest
+
+
 def fetch_local_dataset(*, repo_root: Path, local_path: Path, dataset_name: str = "local_user_data") -> Path:
     data_root = _dataset_root(repo_root)
     data_root.mkdir(parents=True, exist_ok=True)
     safe_name = _sanitize_dataset_name(dataset_name)
     target_dir = data_root / safe_name
+    # Replace existing dataset contents to avoid stale-file carryover from prior imports.
+    if target_dir.exists():
+        shutil.rmtree(target_dir)
     target_dir.mkdir(parents=True, exist_ok=True)
 
     if local_path.is_dir():
@@ -538,28 +579,113 @@ def smoke_runtime_compatibility(repo_root: Path) -> tuple[bool, str, str]:
             ),
         )
 
+    ok, detail = validate_runtime_case_dir(case_dir)
+    if not ok:
+        if detail.startswith("Missing runtime file:"):
+            if "namelist.atmosphere" in detail:
+                action = (
+                    f"Provide a UFS-compatible dataset with namelist.atmosphere via "
+                    f"{repo_cmd(repo_root, 'run-smoke', 'fetch-data', 'local')} --local-path /path/to/ufs-runtime-data"
+                )
+            elif "streams.atmosphere" in detail:
+                action = (
+                    f"Provide a UFS-compatible dataset with streams.atmosphere via "
+                    f"{repo_cmd(repo_root, 'run-smoke', 'fetch-data', 'local')} --local-path /path/to/ufs-runtime-data"
+                )
+            else:
+                action = (
+                    f"Use UFS-compatible runtime data via "
+                    f"{repo_cmd(repo_root, 'run-smoke', 'fetch-data', 'local')} --local-path /path/to/ufs-runtime-data"
+                )
+        else:
+            action = (
+                f"Use UFS-compatible runtime data via "
+                f"{repo_cmd(repo_root, 'run-smoke', 'fetch-data', 'local')} --local-path /path/to/ufs-runtime-data"
+            )
+        return False, detail, action
+    return True, str(case_dir), ""
+
+
+def _collect_stream_path_tokens(streams_text: str) -> list[str]:
+    tokens = re.findall(r'["\']([^"\']+)["\']', streams_text)
+    out: list[str] = []
+    for raw in tokens:
+        t = raw.strip()
+        if not t:
+            continue
+        if t.endswith("/"):
+            continue
+        if t.startswith(("http://", "https://", "s3://")):
+            continue
+        # Ignore templated/output patterns.
+        if any(ch in t for ch in ("$", "{", "}", "%", "<", ">")):
+            continue
+        low = t.lower()
+        if (
+            "/" in t
+            or "\\" in t
+            or low.endswith(
+                (
+                    ".nc",
+                    ".info",
+                    ".dat",
+                    ".bin",
+                    ".txt",
+                    ".yaml",
+                    ".yml",
+                    ".xml",
+                )
+            )
+        ):
+            out.append(t)
+    # Preserve order and remove duplicates.
+    unique: list[str] = []
+    seen: set[str] = set()
+    for t in out:
+        if t in seen:
+            continue
+        seen.add(t)
+        unique.append(t)
+    return unique
+
+
+def _missing_stream_references(case_dir: Path, streams_path: Path) -> list[Path]:
+    text = streams_path.read_text(encoding="utf-8", errors="ignore")
+    missing: list[Path] = []
+    for token in _collect_stream_path_tokens(text):
+        p = Path(token)
+        candidate = p if p.is_absolute() else case_dir / p
+        if not candidate.exists():
+            missing.append(candidate)
+    return missing
+
+
+def validate_runtime_case_dir(case_dir: Path) -> tuple[bool, str]:
     namelist = case_dir / "namelist.atmosphere"
     streams = case_dir / "streams.atmosphere"
     if not namelist.exists():
-        return (
-            False,
-            f"Missing runtime file: {namelist}",
-            f"Provide a UFS-compatible dataset with namelist.atmosphere via {repo_cmd(repo_root, 'run-smoke', 'fetch-data', 'local')} --local-path /path/to/ufs-runtime-data",
-        )
+        return False, f"Missing runtime file: {namelist}"
     if not streams.exists():
-        return (
-            False,
-            f"Missing runtime file: {streams}",
-            f"Provide a UFS-compatible dataset with streams.atmosphere via {repo_cmd(repo_root, 'run-smoke', 'fetch-data', 'local')} --local-path /path/to/ufs-runtime-data",
-        )
+        return False, f"Missing runtime file: {streams}"
     text = namelist.read_text(encoding="utf-8", errors="ignore")
     if "config_calendar_type" not in text:
         return (
             False,
             "namelist.atmosphere missing config_calendar_type (required for current UFS runtime path).",
-            f"Use UFS-compatible runtime data via {repo_cmd(repo_root, 'run-smoke', 'fetch-data', 'local')} --local-path /path/to/ufs-runtime-data",
         )
-    return True, str(case_dir), ""
+    missing_refs = _missing_stream_references(case_dir, streams)
+    if missing_refs:
+        sample = ", ".join(str(p) for p in missing_refs[:5])
+        extra = "" if len(missing_refs) <= 5 else f" (+{len(missing_refs) - 5} more)"
+        return (
+            False,
+            f"streams.atmosphere references missing runtime files: {sample}{extra}",
+        )
+    return True, str(case_dir)
+
+
+def validate_runtime_data(repo_root: Path) -> tuple[bool, str, str]:
+    return smoke_runtime_compatibility(repo_root)
 
 
 def collect_status_checks(repo_root: Path) -> list[StatusCheck]:
@@ -627,6 +753,14 @@ def format_status_report(checks: list[StatusCheck]) -> tuple[str, bool]:
             lines.append(f"Action required: {c.action_required}")
     lines.append("READY: all required checks passed." if all_ok else "NOT READY: fix RED items before run-smoke execute.")
     return "\n".join(lines), all_ok
+
+
+def format_status_short(checks: list[StatusCheck]) -> tuple[str, bool]:
+    all_ok = all(c.ok for c in checks)
+    if all_ok:
+        return "READY", True
+    failing = [c.name for c in checks if not c.ok]
+    return "NOT READY: " + "; ".join(failing), False
 
 
 def first_blocking_action(checks: list[StatusCheck]) -> str | None:

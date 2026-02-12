@@ -8,6 +8,10 @@ from ..messages import fail, repo_cmd
 from . import run_smoke
 
 
+def _compatibility_label(runtime_compatible: bool) -> str:
+    return "runtime-ready" if runtime_compatible else "metadata-only"
+
+
 def _print_fetch_result(
     repo_root: Path,
     source_repo: str,
@@ -27,6 +31,24 @@ def status(repo_root: Path) -> None:
     checks = run_smoke.collect_status_checks(repo_root)
     report, _ = run_smoke.format_status_report(checks)
     print(report)
+
+
+def status_short(repo_root: Path) -> None:
+    checks = run_smoke.collect_status_checks(repo_root)
+    report, _ = run_smoke.format_status_short(checks)
+    print(report)
+
+
+def validate_data(repo_root: Path) -> None:
+    ok, detail, action = run_smoke.validate_runtime_data(repo_root)
+    if ok:
+        print("Runtime dataset validation: OK")
+        print(f"Case directory: {detail}")
+        return
+    print("Runtime dataset validation: NOT OK")
+    print(f"Details: {detail}")
+    if action:
+        print(f"Action required: {action}")
 
 
 def fetch_scan(
@@ -103,7 +125,8 @@ def fetch_official(
     else:
         print("Official dataset options:")
         for i, ds in enumerate(catalog, start=1):
-            print(f"{i}. {ds.dataset_id}  [source: {ds.source_repo}]")
+            label = _compatibility_label(ds.runtime_compatible)
+            print(f"{i}. {ds.dataset_id}  [source: {ds.source_repo}]  [compat: {label}]")
             print(f"   {ds.description}")
             print(f"   url: {ds.url}")
         choice = prompt_int("Select official dataset number")
@@ -114,6 +137,7 @@ def fetch_official(
             )
         selected_official = catalog[choice - 1]
 
+    print(f"Selected official dataset: {selected_official.dataset_id} [{_compatibility_label(selected_official.runtime_compatible)}]")
     manifest = run_smoke.fetch_official_bundle(repo_root=repo_root, dataset=selected_official)
     _print_fetch_result(repo_root, selected_official.source_repo, selected_official.url, manifest)
     if not selected_official.runtime_compatible:
@@ -154,6 +178,40 @@ def fetch_official_ufs(*, repo_root: Path, s3_prefix: str) -> None:
     )
 
 
+def fetch_official_regtests(*, repo_root: Path, s3_prefix: str, dry_run: bool) -> None:
+    if shutil.which("aws") is None:
+        fail(
+            "NORAA identified: aws CLI is required for official-regtests dataset fetch.",
+            next_step="python -m pip install -U awscli",
+        )
+
+    if dry_run:
+        print("Dry run: official-regtests fetch preview")
+        print(f"Source repository: {run_smoke.REGTESTS_SOURCE_URL}")
+        print(f"Source path: {run_smoke.REGTESTS_BUCKET}/{s3_prefix.strip().strip('/')}/")
+        print("Run without --dry-run to fetch files.")
+        return
+
+    try:
+        manifest = run_smoke.fetch_official_regtests_prefix(
+            repo_root=repo_root,
+            s3_prefix=s3_prefix,
+            aws_bin="aws",
+        )
+    except Exception as e:
+        fail(
+            f"Regtests dataset fetch failed: {e}",
+            next_step=f"{repo_cmd(repo_root, 'run-smoke', 'fetch-data', 'official-regtests')} --s3-prefix <prefix>",
+        )
+
+    _print_fetch_result(
+        repo_root,
+        run_smoke.REGTESTS_SOURCE_URL,
+        f"{run_smoke.REGTESTS_BUCKET}/{s3_prefix.strip().strip('/')}/",
+        manifest,
+    )
+
+
 def fetch_local(*, repo_root: Path, local_path: str, dataset: str) -> None:
     p = Path(local_path).expanduser().resolve()
     if not p.exists():
@@ -161,10 +219,50 @@ def fetch_local(*, repo_root: Path, local_path: str, dataset: str) -> None:
             f"Local data path does not exist: {p}",
             next_step=f"{repo_cmd(repo_root, 'run-smoke', 'fetch-data', 'local')} --local-path /path/to/data",
         )
+    ok, detail = run_smoke.validate_runtime_case_dir(p) if p.is_dir() else (False, "Local path must be a directory for runtime validation.")
+    print(
+        f"Local dataset validation before import: "
+        f"{'runtime-ready' if ok else 'metadata-only'}"
+    )
+    print(f"Validation detail: {detail}")
     manifest = run_smoke.fetch_local_dataset(
         repo_root=repo_root, local_path=p, dataset_name=dataset
     )
     _print_fetch_result(repo_root, "user-local", str(p), manifest)
+
+
+def fetch_local_dry_run(*, local_path: str) -> None:
+    p = Path(local_path).expanduser().resolve()
+    if not p.exists():
+        fail("Local data path does not exist for dry-run validation.", next_step="Provide an existing --local-path")
+    if not p.is_dir():
+        fail("Dry-run validation expects a directory path.", next_step="Provide a directory containing runtime case files")
+    ok, detail = run_smoke.validate_runtime_case_dir(p)
+    print(
+        f"Local dataset dry-run validation: "
+        f"{'runtime-ready' if ok else 'metadata-only'}"
+    )
+    print(f"Details: {detail}")
+
+
+def clean_data(*, repo_root: Path, dataset: str | None) -> None:
+    data_root = repo_root / ".noraa" / "runs" / "smoke" / "data"
+    manifest = data_root / "dataset.toml"
+    if dataset:
+        target = data_root / dataset
+        if not target.exists():
+            fail(
+                f"Dataset not found: {target}",
+                next_step=repo_cmd(repo_root, "run-smoke", "status"),
+            )
+        shutil.rmtree(target)
+        if manifest.exists() and f'name = "{dataset}"' in manifest.read_text(encoding="utf-8", errors="ignore"):
+            manifest.unlink()
+        print(f"Removed dataset: {target}")
+        return
+    if data_root.exists():
+        shutil.rmtree(data_root)
+    print(f"Removed smoke data root: {data_root}")
 
 
 def execute(*, repo_root: Path, timeout_sec: int, command: str | None) -> None:

@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from noraa.workflow import run_smoke
+from noraa.workflow import run_smoke, run_smoke_cli
 
 
 def test_collect_status_checks_not_ready(tmp_path: Path) -> None:
@@ -164,3 +164,145 @@ def test_fetch_official_ufs_prefix_writes_manifest_with_citation(
     assert 'source_repo = "https://registry.opendata.aws/noaa-ufs-htf-pds"' in text
     assert 'citation_accessed_on = "2026-02-11"' in text
     assert "NOAA Unified Forecast System (UFS) Hierarchical Testing Framework (HTF)" in text
+
+
+def test_fetch_official_prints_compatibility_label(tmp_path: Path, monkeypatch, capsys) -> None:
+    dataset = run_smoke.OfficialDataset(
+        dataset_id="supercell",
+        url="https://example.test/supercell.tar.gz",
+        source_repo="https://mpas-dev.github.io/atmosphere/test_cases.html",
+        description="MPAS idealized supercell test-case bundle",
+        runtime_compatible=False,
+        runtime_note="metadata-only",
+    )
+    dataset2 = run_smoke.OfficialDataset(
+        dataset_id="mountain_wave",
+        url="https://example.test/mountain_wave.tar.gz",
+        source_repo="https://mpas-dev.github.io/atmosphere/test_cases.html",
+        description="MPAS idealized mountain-wave test-case bundle",
+        runtime_compatible=False,
+        runtime_note="metadata-only",
+    )
+
+    monkeypatch.setattr(run_smoke, "official_catalog", lambda: [dataset, dataset2])
+    monkeypatch.setattr(run_smoke, "resolve_official_dataset", lambda _dataset_id: dataset)
+    monkeypatch.setattr(
+        run_smoke,
+        "fetch_official_bundle",
+        lambda *, repo_root, dataset: repo_root / ".noraa" / "runs" / "smoke" / "data" / "dataset.toml",
+    )
+
+    run_smoke_cli.fetch_official(
+        repo_root=tmp_path,
+        dataset=None,
+        yes=False,
+        prompt_int=lambda _msg: 1,
+    )
+
+    output = capsys.readouterr().out
+    assert "[compat: metadata-only]" in output
+
+
+def test_fetch_official_regtests_prefix_writes_manifest(tmp_path: Path, monkeypatch) -> None:
+    calls: list[list[str]] = []
+
+    def _fake_run(cmd, check, text):
+        calls.append(cmd)
+        return None
+
+    monkeypatch.setattr(run_smoke.subprocess, "run", _fake_run)
+    manifest = run_smoke.fetch_official_regtests_prefix(
+        repo_root=tmp_path,
+        s3_prefix="input-data-20251015/MPAS",
+        aws_bin="aws",
+    )
+
+    assert calls
+    assert calls[0][:6] == [
+        "aws",
+        "s3",
+        "cp",
+        "--recursive",
+        "--no-sign-request",
+        "s3://noaa-ufs-regtests-pds/input-data-20251015/MPAS/",
+    ]
+    text = manifest.read_text(encoding="utf-8")
+    assert 'source_repo = "https://noaa-ufs-regtests-pds.s3.amazonaws.com"' in text
+    assert 'runtime_note = "Fetched from noaa-ufs-regtests-pds. NORAA will validate required runtime files."' in text
+
+
+def test_validate_runtime_case_dir_checks_streams_references(tmp_path: Path) -> None:
+    case_dir = tmp_path / "case"
+    case_dir.mkdir(parents=True)
+    (case_dir / "namelist.atmosphere").write_text(
+        "&nhyd_model\n config_calendar_type='gregorian'\n/\n",
+        encoding="utf-8",
+    )
+    (case_dir / "streams.atmosphere").write_text(
+        '<stream name="input" filename_template="missing_input.nc"/>\n',
+        encoding="utf-8",
+    )
+
+    ok, detail = run_smoke.validate_runtime_case_dir(case_dir)
+    assert ok is False
+    assert "streams.atmosphere references missing runtime files" in detail
+    assert "missing_input.nc" in detail
+
+
+def test_format_status_short_not_ready_lists_failed_checks() -> None:
+    checks = [
+        run_smoke.StatusCheck(name="A", ok=True, detail="a"),
+        run_smoke.StatusCheck(name="B", ok=False, detail="b"),
+        run_smoke.StatusCheck(name="C", ok=False, detail="c"),
+    ]
+    text, ready = run_smoke.format_status_short(checks)
+    assert ready is False
+    assert "NOT READY:" in text
+    assert "B" in text
+    assert "C" in text
+
+
+def test_fetch_official_regtests_dry_run_does_not_download(tmp_path: Path, monkeypatch, capsys) -> None:
+    monkeypatch.setattr(run_smoke_cli.shutil, "which", lambda _x: "aws")
+    called = {"fetch": False}
+
+    def _unexpected_fetch(**_kwargs):
+        called["fetch"] = True
+        raise AssertionError("fetch_official_regtests_prefix should not run in dry-run mode")
+
+    monkeypatch.setattr(run_smoke, "fetch_official_regtests_prefix", _unexpected_fetch)
+    run_smoke_cli.fetch_official_regtests(
+        repo_root=tmp_path,
+        s3_prefix="input-data-20251015/MPAS",
+        dry_run=True,
+    )
+
+    output = capsys.readouterr().out
+    assert "Dry run: official-regtests fetch preview" in output
+    assert called["fetch"] is False
+
+
+def test_fetch_local_dry_run_reports_metadata_only(tmp_path: Path, capsys) -> None:
+    data_dir = tmp_path / "data"
+    data_dir.mkdir()
+    (data_dir / "x1.40962.init.nc").write_text("x\n", encoding="utf-8")
+    run_smoke_cli.fetch_local_dry_run(local_path=str(data_dir))
+    output = capsys.readouterr().out
+    assert "metadata-only" in output
+
+
+def test_clean_data_removes_dataset_and_manifest(tmp_path: Path) -> None:
+    data_root = tmp_path / ".noraa" / "runs" / "smoke" / "data"
+    case = data_root / "sample"
+    case.mkdir(parents=True)
+    (case / "x.txt").write_text("x\n", encoding="utf-8")
+    manifest = data_root / "dataset.toml"
+    manifest.write_text(
+        "[dataset]\n"
+        'name = "sample"\n',
+        encoding="utf-8",
+    )
+
+    run_smoke_cli.clean_data(repo_root=tmp_path, dataset="sample")
+    assert not case.exists()
+    assert not manifest.exists()

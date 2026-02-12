@@ -22,5 +22,14 @@ def test_run_smoke_fetch_data_help_is_command_oriented() -> None:
     assert "scan" in result.stdout
     assert "official" in result.stdout
     assert "official-ufs" in result.stdout
+    assert "official-regtests" in result.stdout
     assert "local" in result.stdout
+    assert "clean-data" in result.stdout
     assert "--source" not in result.stdout
+
+
+def test_run_smoke_help_has_validate_data() -> None:
+    runner = CliRunner()
+    result = runner.invoke(app, ["run-smoke", "--help"])
+    assert result.exit_code == 0
+    assert "validate-data" in result.stdout

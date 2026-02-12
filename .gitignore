@@ -3,3 +3,5 @@ __pycache__/
 *.pyc
 .noraa/
 *.egg-info/
+recovered-chat-*.md
+transcripts/
