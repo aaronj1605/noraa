@@ -84,8 +84,14 @@ noraa verify --repo ~/work/ufsatm
 - noraa bootstrap deps: build MPAS and UFS support libraries into .noraa/deps/install so CMake can resolve required packages during verify.
 - noraa verify: run the MPAS-only configure and build validation (MPAS=ON, FV3=OFF) and write detailed logs under .noraa/logs/.... Treat this as the main pass/fail build check.
 - noraa run-smoke status: show RED/GREEN readiness checks for optional smoke execution and print required follow-up actions.
+- noraa run-smoke status --short: print one-line readiness summary for quick checks/automation.
+- noraa run-smoke validate-data: validate dataset runtime compatibility and print first blocking issue/action.
 - noraa run-smoke fetch-data scan|official|local: register smoke-run dataset metadata from scanned repo files, curated official test-case URLs, or user-local files.
 - noraa run-smoke fetch-data official-ufs: fetch case data from `noaa-ufs-htf-pds` (AWS Open Data) and record required citation metadata.
+- noraa run-smoke fetch-data official-regtests: fetch candidate case data from `noaa-ufs-regtests-pds` and validate runtime compatibility via status checks.
+- noraa run-smoke fetch-data local --dry-run: validate local case directory without importing.
+- noraa run-smoke fetch-data official-regtests --dry-run: preview source path without downloading.
+- noraa run-smoke fetch-data clean-data: remove one dataset or all smoke data under `.noraa/runs/smoke/data`.
 - noraa run-smoke execute: run a short, structured smoke execution probe after readiness is GREEN and write command/stdout/stderr/result under .noraa/runs/smoke/exec/.
 
 ## Logs and Artifacts

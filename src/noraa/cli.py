@@ -54,7 +54,14 @@ run_smoke_app.add_typer(run_smoke_fetch_app, name="fetch-data")
 
 
 def _target_repo(path: str) -> Path:
-    return git_root(Path(path).resolve())
+    p = Path(path).expanduser().resolve()
+    try:
+        return git_root(p)
+    except Exception:
+        fail(
+            f"Target repo is not a valid git checkout: {p}",
+            next_step="Use --repo pointing to your ufsatm git root (example: /home/user/work/ufsatm)",
+        )
 
 
 def _require_project(repo_root: Path) -> ProjectConfig:
@@ -278,10 +285,23 @@ def build_mpas(
 
 
 @run_smoke_app.command("status")
-def run_smoke_status(repo: str = typer.Option(".", "--repo")):
+def run_smoke_status(
+    repo: str = typer.Option(".", "--repo"),
+    short: bool = typer.Option(False, "--short", help="Print one-line readiness summary."),
+):
     """Report readiness for optional run-smoke workflows with RED/GREEN checks."""
     repo_root = _target_repo(repo)
-    run_smoke_cli.status(repo_root)
+    if short:
+        run_smoke_cli.status_short(repo_root)
+    else:
+        run_smoke_cli.status(repo_root)
+
+
+@run_smoke_app.command("validate-data")
+def run_smoke_validate_data(repo: str = typer.Option(".", "--repo")):
+    """Validate runtime dataset compatibility and list the first blocking issue/action."""
+    repo_root = _target_repo(repo)
+    run_smoke_cli.validate_data(repo_root)
 
 
 @run_smoke_fetch_app.command("scan")
@@ -341,6 +361,24 @@ def run_smoke_fetch_data_official_ufs(
     run_smoke_cli.fetch_official_ufs(repo_root=repo_root, s3_prefix=s3_prefix)
 
 
+@run_smoke_fetch_app.command("official-regtests")
+def run_smoke_fetch_data_official_regtests(
+    repo: str = typer.Option(".", "--repo"),
+    s3_prefix: str = typer.Option(
+        ...,
+        "--s3-prefix",
+        help="S3 prefix under noaa-ufs-regtests-pds (example: input-data-20251015/MPAS).",
+    ),
+    dry_run: bool = typer.Option(False, "--dry-run", help="Preview source path without downloading."),
+):
+    """Fetch candidate case data from noaa-ufs-regtests-pds and validate compatibility via status checks."""
+    repo_root = _target_repo(repo)
+    _require_project(repo_root)
+    run_smoke_cli.fetch_official_regtests(
+        repo_root=repo_root, s3_prefix=s3_prefix, dry_run=dry_run
+    )
+
+
 @run_smoke_fetch_app.command("local")
 def run_smoke_fetch_data_local(
     repo: str = typer.Option(".", "--repo"),
@@ -354,11 +392,26 @@ def run_smoke_fetch_data_local(
         "--dataset",
         help="Dataset name to store under .noraa/runs/smoke/data.",
     ),
+    dry_run: bool = typer.Option(False, "--dry-run", help="Validate local case files without importing."),
 ):
     """Register user-provided local dataset files under `.noraa/runs/smoke/data`."""
     repo_root = _target_repo(repo)
     _require_project(repo_root)
+    if dry_run:
+        run_smoke_cli.fetch_local_dry_run(local_path=local_path)
+        return
     run_smoke_cli.fetch_local(repo_root=repo_root, local_path=local_path, dataset=dataset)
+
+
+@run_smoke_fetch_app.command("clean-data")
+def run_smoke_fetch_data_clean(
+    repo: str = typer.Option(".", "--repo"),
+    dataset: str = typer.Option(None, "--dataset", help="Optional dataset directory name to remove."),
+):
+    """Remove one dataset directory or all smoke data under .noraa/runs/smoke/data."""
+    repo_root = _target_repo(repo)
+    _require_project(repo_root)
+    run_smoke_cli.clean_data(repo_root=repo_root, dataset=dataset)
 
 
 @run_smoke_app.command("execute")

@@ -9,11 +9,15 @@ import selectors
 
 
 def git_root(path: Path) -> Path:
-    out = subprocess.check_output(
-        ["git", "-C", str(path), "rev-parse", "--show-toplevel"],
-        text=True,
-    ).strip()
-    return Path(out)
+    try:
+        out = subprocess.check_output(
+            ["git", "-C", str(path), "rev-parse", "--show-toplevel"],
+            text=True,
+            stderr=subprocess.STDOUT,
+        ).strip()
+        return Path(out)
+    except Exception as exc:
+        raise RuntimeError(f"not a git repository: {path}") from exc
 
 
 def ensure_dir(p: Path) -> Path:

@@ -28,6 +28,21 @@ def test_fetch_local_dataset_rejects_path_like_dataset_name(tmp_path: Path) -> N
         run_smoke.fetch_local_dataset(repo_root=tmp_path, local_path=src, dataset_name="../escape")
 
 
+def test_fetch_local_dataset_replaces_existing_dataset_dir(tmp_path: Path) -> None:
+    data_root = tmp_path / ".noraa" / "runs" / "smoke" / "data" / "sample"
+    data_root.mkdir(parents=True)
+    (data_root / "stale.txt").write_text("old\n", encoding="utf-8")
+
+    src = tmp_path / "source"
+    src.mkdir()
+    (src / "x1.40962.init.nc").write_text("new\n", encoding="utf-8")
+
+    run_smoke.fetch_local_dataset(repo_root=tmp_path, local_path=src, dataset_name="sample")
+
+    assert not (data_root / "stale.txt").exists()
+    assert (data_root / "x1.40962.init.nc").exists()
+
+
 def test_safe_extract_tar_gz_blocks_path_traversal(tmp_path: Path) -> None:
     archive = tmp_path / "bad.tar.gz"
     payload = tmp_path / "payload.txt"
