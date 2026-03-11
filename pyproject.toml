@@ -5,7 +5,7 @@ build-backend = "setuptools.build_meta"
 [project]
 name = "noraa"
 version = "0.1.0"
-description = "Rule-based helper agent for building MPAS in a target ufsatm repo"
+description = "Rule-based helper agent for building MPAS or FV3 in a target ufsatm repo"
 readme = "README.md"
 requires-python = ">=3.11"
 dependencies = [

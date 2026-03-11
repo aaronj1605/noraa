@@ -7,7 +7,7 @@ from .find_deps import render_find_deps_script
 from .paths import pick_mpas_suite
 
 
-def cmake_fallback_mpas(
+def cmake_fallback_core(
     *,
     repo_root: Path,
     out: Path,
@@ -16,12 +16,11 @@ def cmake_fallback_mpas(
     deps_prefix: str | None,
     esmf_mkfile: str | None,
     python_executable: str,
+    core: str,
 ) -> int:
     build_dir = repo_root / ".noraa" / "build"
     if clean and build_dir.exists():
         safe_check_output(["bash", "-lc", "rm -rf .noraa/build"], cwd=repo_root, env=env)
-
-    suite = pick_mpas_suite(repo_root)
 
     wrapper_src = repo_root / ".noraa" / "wrapper-src"
     wrapper_src.mkdir(parents=True, exist_ok=True)
@@ -37,17 +36,36 @@ def cmake_fallback_mpas(
         str(wrapper_src),
         "-B",
         str(build_dir),
-        "-DMPAS=ON",
-        "-DFV3=OFF",
-        f"-DCCPP_SUITES={suite}",
         f"-DPython_EXECUTABLE={python_executable}",
         f"-DPython3_EXECUTABLE={python_executable}",
     ]
+    if core == "fv3":
+        configure.extend(
+            [
+                "-DMPAS=OFF",
+                "-DFV3=ON",
+                # Keep FV3/CCPP precision modes aligned to avoid REAL(8)<->REAL(4)
+                # interface mismatches on GNU toolchains.
+                "-D32BIT=ON",
+                "-DCCPP_32BIT=ON",
+                "-DRRTMGP_32BIT=ON",
+            ]
+        )
+    else:
+        suite = pick_mpas_suite(repo_root)
+        configure.extend(
+            [
+                "-DMPAS=ON",
+                "-DFV3=OFF",
+                f"-DCCPP_SUITES={suite}",
+            ]
+        )
 
     module_paths: list[str] = []
-    mpas_modules = repo_root / "mpas" / "MPAS-Model" / "cmake" / "Modules"
-    if mpas_modules.exists():
-        module_paths.append(str(mpas_modules))
+    if core == "mpas":
+        mpas_modules = repo_root / "mpas" / "MPAS-Model" / "cmake" / "Modules"
+        if mpas_modules.exists():
+            module_paths.append(str(mpas_modules))
 
     find_deps = out / "find_deps.cmake"
     if deps_prefix:
@@ -93,6 +111,8 @@ def cmake_fallback_mpas(
                 netcdff_lib=netcdff_lib,
                 fms_lib=fms_lib,
                 fms_include=fms_include,
+                include_fms_shim=(core == "mpas"),
+                include_stochastic_physics_stub=False,
             )
         )
         configure.append(f"-DCMAKE_PROJECT_TOP_LEVEL_INCLUDES={find_deps}")
@@ -111,11 +131,25 @@ def cmake_fallback_mpas(
             if deps_prefix and find_deps.exists():
                 esmf_lib = mk_path.parent / "libesmf.so"
                 if esmf_lib.exists():
+                    esmf_mod_dir = install_root / "mod" / "modO" / mk_path.parent.name
+                    esmf_includes: list[str] = []
+                    if esmf_mod_dir.exists():
+                        esmf_includes.append(str(esmf_mod_dir))
+                    generic_include = install_root / "include"
+                    if generic_include.exists():
+                        esmf_includes.append(str(generic_include))
+                    include_prop = ";".join(esmf_includes)
                     with find_deps.open("a", encoding="utf-8") as f:
                         f.write(
                             "if(NOT TARGET ESMF::ESMF)\n"
                             "  add_library(ESMF::ESMF SHARED IMPORTED GLOBAL)\n"
-                            f"  set_target_properties(ESMF::ESMF PROPERTIES IMPORTED_LOCATION \"{esmf_lib}\")\n"
+                            f"  set_target_properties(ESMF::ESMF PROPERTIES IMPORTED_LOCATION \"{esmf_lib}\""
+                            + (
+                                f" INTERFACE_INCLUDE_DIRECTORIES \"{include_prop}\""
+                                if include_prop
+                                else ""
+                            )
+                            + ")\n"
                             "endif()\n"
                         )
 

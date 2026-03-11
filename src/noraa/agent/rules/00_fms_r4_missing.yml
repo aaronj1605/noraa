@@ -1,0 +1,23 @@
+id: fms-r4-missing
+title: FMS R4 component missing for FV3 configure
+severity: error
+match_any_regex:
+  - "FMS::fms_r4 \\[COMPONENT R4 NOT FOUND\\]"
+  - "find_package\\(FMS.*R4.*REQUIRED\\)"
+summary: >
+  FV3 configure requested the FMS R4 component, but your dependency install does not provide it.
+likely_cause: >
+  The current FMS build produced only the default/r8 target (or your compiler toolchain cannot build the r4 variant with current flags).
+evidence_commands:
+  - "ls -l \"{repo_root}/.noraa/deps/install/lib/libfms*\" || true"
+  - "grep -n \"fms_r4\\|FMS_FOUND\\|COMPONENT\" \"{repo_root}/.noraa/deps/install/lib/cmake/fms/fms-config.cmake\" || true"
+  - "nl -ba \"{repo_root}/fv3/atmos_cubed_sphere/CMakeLists.txt\" | sed -n '54,64p' || true"
+fix_steps:
+  - "# 1) Confirm whether fms_r4 exists in deps install"
+  - "ls -l \"{repo_root}/.noraa/deps/install/lib/libfms*\""
+  - ""
+  - "# 2) If fms_r4 is unavailable, align FV3 config to R8 temporarily in your local ufsatm checkout"
+  - "sed -i 's/find_package(FMS COMPONENTS R4 REQUIRED)/find_package(FMS COMPONENTS R8 REQUIRED)/' \"{repo_root}/fv3/atmos_cubed_sphere/CMakeLists.txt\""
+  - ""
+  - "# 3) Re-run verify"
+  - "{verify_command}"

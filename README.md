@@ -1,6 +1,6 @@
 # NORAA
 
-NORAA is a CLI helper for building UFS ATM with MPAS (not FV3) using clean upstream repos.
+NORAA is a CLI helper for building UFS ATM with MPAS or FV3 using clean upstream repos.
 It keeps build artifacts and logs under `.noraa/` in the target `ufsatm` repo for reproducible runs.
 
 ## Tested Baseline
@@ -60,7 +60,7 @@ git clone --branch develop https://github.com/NOAA-EMC/ufsatm.git
 cd ufsatm
 
 # NORAA guided workflow (recommended)
-noraa build-mpas --repo ~/work/ufsatm
+noraa build --repo ~/work/ufsatm --core mpas
 ```
 
 ## Manual Workflow (Advanced)
@@ -78,11 +78,14 @@ noraa verify --repo ~/work/ufsatm
 ## Command Purpose
 
 - noraa init: create .noraa/project.toml for this ufsatm checkout so NORAA can track repo-local state, logs, and artifacts. Run once per clone.
-- noraa build-mpas: guided one-command path for fresh setups. It prompts through init, submodule update, dependency bootstrap, and MPAS verify.
-- noraa verify --preflight-only: run fast blockers-only checks before a full build. It reports what is missing and the exact next command to run.
+- noraa init --core mpas|fv3: select the default atmospheric core workflow recorded in project config.
+- noraa build --core mpas|fv3: guided one-command path for fresh setups for the selected core.
+- noraa self-test: run local NORAA pytest suite with dependency check (prints install step if pytest is missing).
+- noraa build-mpas: compatibility alias for the legacy MPAS-first guided build path.
+- noraa verify --core mpas|fv3 --preflight-only: run fast blockers-only checks before a full build. It reports what is missing and the exact next command to run.
 - noraa bootstrap esmf: build ESMF into .noraa/esmf/install so MPAS and UFS can find ESMF without requiring a system-wide install.
 - noraa bootstrap deps: build MPAS and UFS support libraries into .noraa/deps/install so CMake can resolve required packages during verify.
-- noraa verify: run the MPAS-only configure and build validation (MPAS=ON, FV3=OFF) and write detailed logs under .noraa/logs/.... Treat this as the main pass/fail build check.
+- noraa verify: run core-aware configure and build validation for the selected workflow and write detailed logs under .noraa/logs/.... Treat this as the main pass/fail build check.
 - noraa run-smoke status: show RED/GREEN readiness checks for optional smoke execution and print required follow-up actions.
 - noraa run-smoke status --short: print one-line readiness summary for quick checks/automation.
 - noraa run-smoke validate-data: validate dataset runtime compatibility and print first blocking issue/action.
@@ -93,6 +96,9 @@ noraa verify --repo ~/work/ufsatm
 - noraa run-smoke fetch-data official-regtests --dry-run: preview source path without downloading.
 - noraa run-smoke fetch-data clean-data: remove one dataset or all smoke data under `.noraa/runs/smoke/data`.
 - noraa run-smoke execute: run a short, structured smoke execution probe after readiness is GREEN and write command/stdout/stderr/result under .noraa/runs/smoke/exec/.
+- noraa rt guide: quick guided RT-style walkthrough (verify -> readiness -> execute) with core-aware prompts.
+- noraa rt advanced-guide: advanced RT path with platform hints (linux/jet/hera), explicit runtime case validation, and execute handoff.
+- noraa rt validate-case --core mpas|fv3 --case-dir <dir>: validate local runtime case layout before execute.
 
 ## Logs and Artifacts
 

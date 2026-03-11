@@ -5,11 +5,17 @@ from pathlib import Path
 from ..messages import fail, repo_cmd
 
 
-def detect_verify_script(repo_root: Path) -> Path | None:
-    candidates = [
-        repo_root / "scripts" / "verify_mpas_smoke.sh",
-        repo_root / "scripts" / "verify.sh",
-    ]
+def detect_verify_script(repo_root: Path, core: str = "mpas") -> Path | None:
+    if core == "fv3":
+        candidates = [
+            repo_root / "scripts" / "verify_fv3_smoke.sh",
+            repo_root / "scripts" / "verify.sh",
+        ]
+    else:
+        candidates = [
+            repo_root / "scripts" / "verify_mpas_smoke.sh",
+            repo_root / "scripts" / "verify.sh",
+        ]
     for p in candidates:
         if p.exists():
             return p

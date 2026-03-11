@@ -6,10 +6,10 @@ from .util import safe_check_output
 
 
 class VerifyResult:
-    def __init__(self, ok: bool, reason: str, mpas_exe: Path | None = None):
+    def __init__(self, ok: bool, reason: str, executable: Path | None = None):
         self.ok = ok
         self.reason = reason
-        self.mpas_exe = mpas_exe
+        self.executable = executable
 
 
 def _extract_ldd_path(ldd_text: str, libname: str) -> str | None:
@@ -36,17 +36,40 @@ def _is_system_path(p: str) -> bool:
     return any(p.startswith(pref) for pref in system_prefixes)
 
 
-def validate_mpas_success(repo_root: Path, deps_prefix: str | None, out_dir: Path) -> VerifyResult:
-    mpas_exe = repo_root / ".noraa" / "build" / "bin" / "mpas_atmosphere"
+def _core_executable(repo_root: Path, core: str) -> Path | None:
+    bin_root = repo_root / ".noraa" / "build" / "bin"
+    if core == "fv3":
+        candidates = [bin_root / "ufs_model", bin_root / "fv3_model"]
+    else:
+        candidates = [bin_root / "mpas_atmosphere"]
+    for exe in candidates:
+        if exe.exists():
+            return exe
+    return None
 
-    if not mpas_exe.exists():
-        return VerifyResult(False, f"mpas_atmosphere missing at {mpas_exe}", None)
 
-    if not mpas_exe.is_file() or not (mpas_exe.stat().st_mode & 0o111):
-        return VerifyResult(False, f"mpas_atmosphere not executable: {mpas_exe}", mpas_exe)
+def validate_core_success(
+    repo_root: Path, deps_prefix: str | None, out_dir: Path, core: str
+) -> VerifyResult:
+    exe = _core_executable(repo_root, core)
+    label = "FV3 executable" if core == "fv3" else "mpas_atmosphere"
+    if exe is None:
+        if core == "fv3":
+            stdout_path = out_dir / "stdout.txt"
+            if stdout_path.exists():
+                stdout = stdout_path.read_text(encoding="utf-8", errors="ignore")
+                if "Built target ufsatm_fv3" in stdout:
+                    return VerifyResult(True, "ok (built target ufsatm_fv3)", None)
+        expected = (
+            repo_root / ".noraa" / "build" / "bin" / ("ufs_model (or fv3_model)" if core == "fv3" else "mpas_atmosphere")
+        )
+        return VerifyResult(False, f"{label} missing at {expected}", None)
 
-    ldd = safe_check_output(["ldd", str(mpas_exe)])
-    (out_dir / "ldd_mpas_atmosphere.txt").write_text(ldd)
+    if not exe.is_file() or not (exe.stat().st_mode & 0o111):
+        return VerifyResult(False, f"{label} not executable: {exe}", exe)
+
+    ldd = safe_check_output(["ldd", str(exe)])
+    (out_dir / f"ldd_{exe.name}.txt").write_text(ldd)
 
     def _rp(p: str) -> str:
         try:
@@ -72,11 +95,11 @@ def validate_mpas_success(repo_root: Path, deps_prefix: str | None, out_dir: Pat
         libmpi_path = _extract_ldd_path(ldd, "libmpi.so.40") or _extract_ldd_path(ldd, "libmpi.so")
         if libmpi_path is None:
             # If we cannot find libmpi, keep it a failure because runtime MPI is unknown.
-            return VerifyResult(False, "Could not determine libmpi path from ldd output", mpas_exe)
+            return VerifyResult(False, "Could not determine libmpi path from ldd output", exe)
 
         if libmpi_path == "not":
             # Handles "=> not found" in a crude but safe way
-            return VerifyResult(False, "libmpi not found in ldd output", mpas_exe)
+            return VerifyResult(False, "libmpi not found in ldd output", exe)
 
         # Accept any concrete resolvable path, including system lib locations.
         # If it is elsewhere (for example a Spack store), accept and record it in the reason.
@@ -85,17 +108,21 @@ def validate_mpas_success(repo_root: Path, deps_prefix: str | None, out_dir: Pat
         # If it matches deps_prefix (string match) or resolves under it (realpath match), great.
         # Prefer reporting the canonical mpi_prefix when available.
         if mpi_prefix and libmpi_real.startswith(mpi_prefix + "/"):
-            r = VerifyResult(True, f"ok (libmpi under mpi_prefix: {libmpi_real})", mpas_exe)
+            r = VerifyResult(True, f"ok (libmpi under mpi_prefix: {libmpi_real})", exe)
         elif deps_prefix in libmpi_path or deps_prefix in libmpi_real:
-            r = VerifyResult(True, f"ok (libmpi under deps prefix: {libmpi_path})", mpas_exe)
+            r = VerifyResult(True, f"ok (libmpi under deps prefix: {libmpi_path})", exe)
         elif _is_system_path(libmpi_path):
-            r = VerifyResult(True, f"ok (libmpi resolved from system path: {libmpi_path})", mpas_exe)
+            r = VerifyResult(True, f"ok (libmpi resolved from system path: {libmpi_path})", exe)
         else:
-            r = VerifyResult(True, f"ok (libmpi resolved at: {libmpi_path})", mpas_exe)
+            r = VerifyResult(True, f"ok (libmpi resolved at: {libmpi_path})", exe)
 
         (out_dir / "postcheck.txt").write_text(
             f"ok={r.ok}\nreason={r.reason}\nlibmpi={libmpi_path}\nlibmpi_real={libmpi_real}\nmpiexec_real={mpiexec_real}\nmpi_prefix={mpi_prefix}\n"
         )
         return r
 
-    return VerifyResult(True, "ok", mpas_exe)
+    return VerifyResult(True, "ok", exe)
+
+
+def validate_mpas_success(repo_root: Path, deps_prefix: str | None, out_dir: Path) -> VerifyResult:
+    return validate_core_success(repo_root, deps_prefix, out_dir, "mpas")

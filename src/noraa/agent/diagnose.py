@@ -23,7 +23,7 @@ class Rule:
 def _load_rules() -> list[Rule]:
     rules: list[Rule] = []
     pkg = resources.files("noraa.agent.rules")
-    for p in pkg.iterdir():
+    for p in sorted(pkg.iterdir(), key=lambda x: x.name):
         if p.name.endswith(".yml") or p.name.endswith(".yaml"):
             data = yaml.safe_load(p.read_text())
             rules.append(
@@ -53,6 +53,7 @@ def diagnose_log(
     repo_root: Path,
     deps_prefix: str | None = None,
     esmf_mkfile: str | None = None,
+    core: str = "mpas",
 ) -> tuple[int, str, str | None, str | None]:
     stdout = _read_text(log_dir / "stdout.txt")
     stderr = _read_text(log_dir / "stderr.txt")
@@ -72,17 +73,24 @@ def diagnose_log(
         msg = "No known rule matched this failure. Review logs and snapshot files in: " + str(log_dir)
         return 2, msg + "\n", None, None
 
-    mpas_exe = repo_root / ".noraa" / "build" / "bin" / "mpas_atmosphere"
+    core_value = (core or "mpas").strip().lower()
+    if core_value == "fv3":
+        core_exe = repo_root / ".noraa" / "build" / "bin" / "ufs_model"
+    else:
+        core_value = "mpas"
+        core_exe = repo_root / ".noraa" / "build" / "bin" / "mpas_atmosphere"
 
     substitutions = {
         "deps_prefix": deps_prefix or "<set DEPS_PREFIX>",
         "repo_root": str(repo_root),
-        "mpas_exe": str(mpas_exe),
+        "core": core_value,
+        "core_exe": str(core_exe),
         "mpi_prefix": "",
         "mpiexec_real": "",
         "esmf_src": "<path to ESMF source>",
         "esmf_install_prefix": "<path to ESMF install prefix>",
         "esmf_mkfile": esmf_mkfile or "<path to esmf.mk>",
+        "verify_command": f"noraa verify --repo {repo_root} --core {core_value}",
     }
 
     # Optional: enrich substitutions from postcheck.txt if present

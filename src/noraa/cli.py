@@ -1,33 +1,36 @@
 from __future__ import annotations
 
+import importlib.util
 import os
+import shlex
 import shutil
+import subprocess
 import sys
 from pathlib import Path
 
 import typer
 
 from .agent.diagnose import diagnose_log
-from .bootstrap.tasks import bootstrap_deps, bootstrap_esmf
-from .buildsystem.configure import cmake_fallback_mpas
-from .buildsystem.env import build_env
-from .buildsystem.paths import (
-    detect_verify_script,
-    resolve_deps_prefix,
-    resolve_esmf_mkfile,
-)
 from .messages import fail, repo_cmd
+from .fallbacks.fv3 import (
+    _apply_fv3_external_sst_fallback,
+    _apply_fv3_fms_r8_fallback,
+    _apply_fv3_fms_required_fallback,
+    _apply_fv3_fv_dynamics_kind_fix,
+    _apply_fv3_stochastic_wrapper_stub,
+    _apply_fv3_stochy_pattern_fallback,
+    _apply_fv3_top_level_dependency_guards,
+    _apply_fv3_update_ca_fallback,
+)
 from .project import (
     ProjectConfig,
-    get_origin_url,
     load_project,
     validate_repo_origin,
-    write_project,
 )
-from .snapshot import write_env_snapshot, write_tool_snapshot
-from .util import git_root, log_dir, run_streamed, safe_check_output
-from .validate import validate_mpas_success
-from .workflow import guided_build, preflight, run_smoke_cli
+from .util import git_root
+from .workflow import guided_build, preflight
+from .workflow.core_commands import register_core_commands
+from .workflow.run_smoke_rt_commands import register_run_smoke_and_rt_commands
 
 BASELINE_HELP = "Tested baseline: Linux (Ubuntu 22.04/24.04), Python 3.11+, upstream ufsatm develop.\nUse: noraa <command> --help for command details."
 
@@ -40,6 +43,10 @@ run_smoke_fetch_app = typer.Typer(
     add_completion=False,
     help="Pull smoke-run sample data from repo scan, official catalog, or local files.",
 )
+rt_app = typer.Typer(
+    add_completion=False,
+    help="Guided Runtime-Test (RT-style) walkthrough for end-to-end runs.",
+)
 
 
 @app.callback()
@@ -51,6 +58,7 @@ def _root_callback() -> None:
 
 app.add_typer(run_smoke_app, name="run-smoke")
 run_smoke_app.add_typer(run_smoke_fetch_app, name="fetch-data")
+app.add_typer(rt_app, name="rt")
 
 
 def _target_repo(path: str) -> Path:
@@ -61,6 +69,24 @@ def _target_repo(path: str) -> Path:
         fail(
             f"Target repo is not a valid git checkout: {p}",
             next_step="Use --repo pointing to your ufsatm git root (example: /home/user/work/ufsatm)",
+        )
+
+
+def _normalize_core(core: str) -> str:
+    value = (core or "mpas").strip().lower()
+    if value not in {"mpas", "fv3"}:
+        fail(
+            f"Unsupported core: {core}",
+            next_step="Use --core mpas or --core fv3",
+        )
+    return value
+
+
+def _ensure_pytest_available() -> None:
+    if importlib.util.find_spec("pytest") is None:
+        fail(
+            "pytest is required for noraa self-test but is not installed in this environment.",
+            next_step=f"{sys.executable} -m pip install pytest",
         )
 
 
@@ -77,160 +103,22 @@ def _require_project(repo_root: Path) -> ProjectConfig:
     return cfg
 
 
-@app.command()
-def init(
-    repo: str = typer.Option(".", "--repo"),
-    force: bool = typer.Option(False, "--force"),
-    upstream_url: str = typer.Option(
-        "https://github.com/NOAA-EMC/ufsatm.git", "--upstream-url"
-    ),
-):
-    """Initialize NORAA for a target ufsatm checkout."""
-    repo_root = _target_repo(repo)
-    existing = load_project(repo_root)
-    if existing and not force:
-        raise SystemExit("Project already initialized. Use --force to overwrite.")
+verify_runner, _core_cmds = register_core_commands(
+    app=app,
+    target_repo=_target_repo,
+    require_project=_require_project,
+    normalize_core=_normalize_core,
+)
 
-    origin = ""
-    try:
-        origin = get_origin_url(repo_root)
-    except Exception:
-        pass
-
-    cfg = ProjectConfig(repo_path=str(repo_root), upstream_url=upstream_url)
-    if origin and origin.rstrip("/") != upstream_url.rstrip("/"):
-        if not typer.confirm("Repo is a fork. Proceed anyway?", default=False):
-            raise SystemExit(2)
-        cfg.allow_fork = True
-        cfg.fork_url = origin
-
-    write_project(repo_root, cfg)
-    print("Initialized NORAA project.")
-
-
-@app.command()
-def doctor(repo: str = typer.Option(".", "--repo")):
-    """Capture environment and tool snapshots for the target repo."""
-    repo_root = _target_repo(repo)
-    _require_project(repo_root)
-
-    out = log_dir(repo_root, "doctor")
-    env = os.environ.copy()
-    write_env_snapshot(out, env)
-    write_tool_snapshot(out, env)
-
-    print((out / "tools.txt").read_text(), end="")
-    print(f"Logs: {out}")
-
-
-@app.command()
-def verify(
-    repo: str = typer.Option(".", "--repo"),
-    deps_prefix: str = typer.Option(None, "--deps-prefix"),
-    esmf_mkfile: str = typer.Option(None, "--esmf-mkfile"),
-    clean: bool = typer.Option(True, "--clean/--no-clean"),
-    preflight_only: bool = typer.Option(False, "--preflight-only"),
-):
-    """
-    Verify that MPAS can be configured and built for the target ufsatm repo.
-
-    Behaviour:
-    - Require ESMF (bootstrapped under .noraa/esmf, --esmf-mkfile, or --deps-prefix).
-    - Prefer upstream verify scripts when present; otherwise fall back to CMake.
-    - Always build MPAS only (-DMPAS=ON -DFV3=OFF) with a valid MPAS CCPP suite.
-    """
-    repo_root = _target_repo(repo)
-    cfg = _require_project(repo_root)
-    resolved_deps = resolve_deps_prefix(repo_root, deps_prefix)
-    script = Path(cfg.verify_script) if cfg.verify_script else None
-    if not script or not script.exists():
-        script = detect_verify_script(repo_root)
-    issues = _verify_preflight_issues(
-        repo_root,
-        deps_prefix=resolved_deps,
-        esmf_mkfile=esmf_mkfile,
-        using_verify_script=bool(script and script.exists()),
-    )
-    if preflight_only:
-        if issues:
-            raise SystemExit(_format_preflight_summary(issues))
-        print("Preflight OK. No blocking issues found.")
-        return
-    if issues:
-        raise SystemExit(_format_preflight_summary(issues))
-    out = log_dir(repo_root, "verify")
-
-    resolved_esmf = resolve_esmf_mkfile(repo_root, resolved_deps, esmf_mkfile)
-    env = build_env(resolved_deps, resolved_esmf)
-
-    write_env_snapshot(out, env)
-    write_tool_snapshot(out, env)
-
-    if script and script.exists():
-        if clean:
-            safe_check_output(["bash", "-lc", "rm -rf .noraa/build"], cwd=repo_root, env=env)
-        rc = run_streamed(["bash", str(script)], repo_root, out, env)
-    else:
-        rc = cmake_fallback_mpas(
-            repo_root=repo_root,
-            out=out,
-            env=env,
-            clean=clean,
-            deps_prefix=resolved_deps,
-            esmf_mkfile=resolved_esmf,
-            python_executable=sys.executable,
-        )
-
-    (out / "exit_code.txt").write_text(f"{rc}\n")
-    v = validate_mpas_success(repo_root, resolved_deps, out)
-    (out / "postcheck.txt").write_text(f"ok={v.ok}\nreason={v.reason}\n")
-
-    if rc != 0 or not v.ok:
-        code, msg, _, _ = diagnose_log(
-            out, repo_root, deps_prefix=resolved_deps, esmf_mkfile=resolved_esmf
-        )
-        (out / "diagnosis.txt").write_text(msg)
-        print(msg, end="")
-        print(f"\nRun this command next: noraa diagnose --repo {repo_root} --log-dir {out}")
-        raise SystemExit(code)
-
-    print(f"VERIFY PASSED. Logs: {out}")
-
-
-@app.command()
-def bootstrap(
-    repo: str = typer.Option(".", "--repo"),
-    component: str = typer.Argument(...),
-    esmf_branch: str = typer.Option(
-        "v8.6.1",
-        "--esmf-branch",
-        help="ESMF git branch or tag to use when bootstrapping.",
-    ),
-):
-    """
-    Bootstrap required components under .noraa/ in the target repo.
-
-    Supported components:
-      - esmf -> clone, build, and install ESMF into .noraa/esmf/install
-      - deps -> build bacio/bufr/sp/w3emc/pio into .noraa/deps/install
-    """
-    repo_root = _target_repo(repo)
-    _require_project(repo_root)
-
-    if component == "esmf":
-        bootstrap_esmf(repo_root, esmf_branch)
-        return
-    if component == "deps":
-        bootstrap_deps(repo_root)
-        return
-
-    fail(
-        f"Unsupported bootstrap component: {component}",
-        next_step=(
-            f"{repo_cmd(repo_root, 'bootstrap', 'deps')}  or  "
-            f"{repo_cmd(repo_root, 'bootstrap', 'esmf')}"
-        ),
-    )
+register_run_smoke_and_rt_commands(
+    run_smoke_app=run_smoke_app,
+    run_smoke_fetch_app=run_smoke_fetch_app,
+    rt_app=rt_app,
+    target_repo=_target_repo,
+    require_project=_require_project,
+    normalize_core=_normalize_core,
+    verify_runner=verify_runner,
+)
 
 
 def _confirm_or_fail(
@@ -245,37 +133,70 @@ def _confirm_or_fail(
     )
 
 
-@app.command("build-mpas")
-def build_mpas(
-    repo: str = typer.Option(".", "--repo"),
-    clean: bool = typer.Option(True, "--clean/--no-clean"),
-    yes: bool = typer.Option(
-        False, "--yes", help="Auto-accept guided prompts and run all steps."
-    ),
-    esmf_branch: str = typer.Option(
-        "v8.6.1",
-        "--esmf-branch",
-        help="ESMF git branch or tag to use if ESMF bootstrap is required.",
-    ),
+def init(
+    repo: str = ".",
+    force: bool = False,
+    core: str = "mpas",
+    upstream_url: str = "https://github.com/NOAA-EMC/ufsatm.git",
 ):
-    """
-    Guided one-command MPAS build path for a target ufsatm checkout.
-    """
+    return _core_cmds["init"](repo=repo, force=force, core=core, upstream_url=upstream_url)
+
+
+def doctor(repo: str = "."):
+    return _core_cmds["doctor"](repo=repo)
+
+
+def verify(
+    repo: str = ".",
+    core: str | None = None,
+    deps_prefix: str | None = None,
+    esmf_mkfile: str | None = None,
+    clean: bool = True,
+    preflight_only: bool = False,
+    fv3_fms_r8_fallback: bool = True,
+):
+    return _core_cmds["verify"](
+        repo=repo,
+        core=core,
+        deps_prefix=deps_prefix,
+        esmf_mkfile=esmf_mkfile,
+        clean=clean,
+        preflight_only=preflight_only,
+        fv3_fms_r8_fallback=fv3_fms_r8_fallback,
+    )
+
+
+def bootstrap(repo: str = ".", component: str = "", esmf_branch: str = "v8.6.1"):
+    return _core_cmds["bootstrap"](repo=repo, component=component, esmf_branch=esmf_branch)
+
+
+def build(
+    repo: str = ".",
+    core: str | None = None,
+    clean: bool = True,
+    yes: bool = False,
+    esmf_branch: str = "v8.6.1",
+):
     repo_root = _target_repo(repo)
-    guided_build.run_build_mpas(
+    cfg = load_project(repo_root)
+    selected_core = _normalize_core(core or (cfg.core if cfg else "mpas"))
+    guided_build.run_build_core(
         repo_root=repo_root,
         clean=clean,
         yes=yes,
         esmf_branch=esmf_branch,
+        core=selected_core,
         confirm_fn=lambda msg: typer.confirm(msg, default=True),
         init_project_fn=lambda p: init(
             repo=str(p),
             force=False,
+            core=selected_core,
             upstream_url="https://github.com/NOAA-EMC/ufsatm.git",
         ),
         require_project_fn=_require_project,
-        verify_fn=lambda p, do_clean: verify(
+        verify_fn=lambda p, do_clean, c: verify(
             repo=str(p),
+            core=c,
             deps_prefix=None,
             esmf_mkfile=None,
             clean=do_clean,
@@ -284,150 +205,63 @@ def build_mpas(
     )
 
 
-@run_smoke_app.command("status")
-def run_smoke_status(
-    repo: str = typer.Option(".", "--repo"),
-    short: bool = typer.Option(False, "--short", help="Print one-line readiness summary."),
+def build_mpas(
+    repo: str = ".",
+    clean: bool = True,
+    yes: bool = False,
+    esmf_branch: str = "v8.6.1",
 ):
-    """Report readiness for optional run-smoke workflows with RED/GREEN checks."""
-    repo_root = _target_repo(repo)
-    if short:
-        run_smoke_cli.status_short(repo_root)
-    else:
-        run_smoke_cli.status(repo_root)
+    return build(repo=repo, core="mpas", clean=clean, yes=yes, esmf_branch=esmf_branch)
 
 
-@run_smoke_app.command("validate-data")
-def run_smoke_validate_data(repo: str = typer.Option(".", "--repo")):
-    """Validate runtime dataset compatibility and list the first blocking issue/action."""
-    repo_root = _target_repo(repo)
-    run_smoke_cli.validate_data(repo_root)
+def _cmake_version() -> tuple[int, int, int] | None:
+    return preflight.cmake_version()
 
 
-@run_smoke_fetch_app.command("scan")
-def run_smoke_fetch_data_scan(
-    repo: str = typer.Option(".", "--repo"),
-    dataset: str = typer.Option(
-        None,
-        "--dataset",
-        help="Dataset name from discovered repo candidates.",
-    ),
-    yes: bool = typer.Option(False, "--yes", help="Auto-select first candidate."),
-):
-    """Discover candidate `.nc` data in checked-out repos and register one dataset."""
-    repo_root = _target_repo(repo)
-    _require_project(repo_root)
-    run_smoke_cli.fetch_scan(
-        repo_root=repo_root,
-        dataset=dataset,
-        yes=yes,
-        prompt_int=lambda msg: typer.prompt(msg, type=int),
+def _verify_preflight_issues(
+    repo_root: Path,
+    *,
+    deps_prefix: str | None,
+    esmf_mkfile: str | None,
+    using_verify_script: bool,
+    core: str,
+) -> list[tuple[str, str]]:
+    return preflight.verify_preflight_issues(
+        repo_root,
+        deps_prefix=deps_prefix,
+        esmf_mkfile=esmf_mkfile,
+        using_verify_script=using_verify_script,
+        core=core,
+        cmake_version_fn=_cmake_version,
     )
 
 
-@run_smoke_fetch_app.command("official")
-def run_smoke_fetch_data_official(
-    repo: str = typer.Option(".", "--repo"),
-    dataset: str = typer.Option(
-        None,
-        "--dataset",
-        help="Official curated dataset id.",
-    ),
-    yes: bool = typer.Option(False, "--yes", help="Auto-select first candidate."),
-):
-    """Select from curated official MPAS test-case bundles and register metadata."""
-    repo_root = _target_repo(repo)
-    _require_project(repo_root)
-    run_smoke_cli.fetch_official(
-        repo_root=repo_root,
-        dataset=dataset,
-        yes=yes,
-        prompt_int=lambda msg: typer.prompt(msg, type=int),
+def _verify_preflight_failure(
+    repo_root: Path,
+    *,
+    deps_prefix: str | None,
+    esmf_mkfile: str | None,
+    using_verify_script: bool,
+    core: str,
+) -> tuple[str, str] | None:
+    issues = _verify_preflight_issues(
+        repo_root,
+        deps_prefix=deps_prefix,
+        esmf_mkfile=esmf_mkfile,
+        using_verify_script=using_verify_script,
+        core=core,
     )
+    if not issues:
+        return None
+    return issues[0]
 
 
-@run_smoke_fetch_app.command("official-ufs")
-def run_smoke_fetch_data_official_ufs(
-    repo: str = typer.Option(".", "--repo"),
-    s3_prefix: str = typer.Option(
-        ...,
-        "--s3-prefix",
-        help="HTF S3 prefix under noaa-ufs-htf-pds (example: develop-20250530/<case-path>).",
-    ),
-):
-    """Fetch UFS/HTF case data from noaa-ufs-htf-pds and record required citation."""
-    repo_root = _target_repo(repo)
-    _require_project(repo_root)
-    run_smoke_cli.fetch_official_ufs(repo_root=repo_root, s3_prefix=s3_prefix)
+def _format_preflight_failure(issue: str, action: str) -> str:
+    return f"{issue}\nAction required: {action}"
 
 
-@run_smoke_fetch_app.command("official-regtests")
-def run_smoke_fetch_data_official_regtests(
-    repo: str = typer.Option(".", "--repo"),
-    s3_prefix: str = typer.Option(
-        ...,
-        "--s3-prefix",
-        help="S3 prefix under noaa-ufs-regtests-pds (example: input-data-20251015/MPAS).",
-    ),
-    dry_run: bool = typer.Option(False, "--dry-run", help="Preview source path without downloading."),
-):
-    """Fetch candidate case data from noaa-ufs-regtests-pds and validate compatibility via status checks."""
-    repo_root = _target_repo(repo)
-    _require_project(repo_root)
-    run_smoke_cli.fetch_official_regtests(
-        repo_root=repo_root, s3_prefix=s3_prefix, dry_run=dry_run
-    )
-
-
-@run_smoke_fetch_app.command("local")
-def run_smoke_fetch_data_local(
-    repo: str = typer.Option(".", "--repo"),
-    local_path: str = typer.Option(
-        ...,
-        "--local-path",
-        help="Directory or file path containing user dataset files.",
-    ),
-    dataset: str = typer.Option(
-        "local_user_data",
-        "--dataset",
-        help="Dataset name to store under .noraa/runs/smoke/data.",
-    ),
-    dry_run: bool = typer.Option(False, "--dry-run", help="Validate local case files without importing."),
-):
-    """Register user-provided local dataset files under `.noraa/runs/smoke/data`."""
-    repo_root = _target_repo(repo)
-    _require_project(repo_root)
-    if dry_run:
-        run_smoke_cli.fetch_local_dry_run(local_path=local_path)
-        return
-    run_smoke_cli.fetch_local(repo_root=repo_root, local_path=local_path, dataset=dataset)
-
-
-@run_smoke_fetch_app.command("clean-data")
-def run_smoke_fetch_data_clean(
-    repo: str = typer.Option(".", "--repo"),
-    dataset: str = typer.Option(None, "--dataset", help="Optional dataset directory name to remove."),
-):
-    """Remove one dataset directory or all smoke data under .noraa/runs/smoke/data."""
-    repo_root = _target_repo(repo)
-    _require_project(repo_root)
-    run_smoke_cli.clean_data(repo_root=repo_root, dataset=dataset)
-
-
-@run_smoke_app.command("execute")
-def run_smoke_execute(
-    repo: str = typer.Option(".", "--repo"),
-    timeout_sec: int = typer.Option(20, "--timeout-sec"),
-    command: str = typer.Option(
-        None,
-        "--command",
-        help="Optional override command to run in the smoke execution directory.",
-    ),
-):
-    """Run a short structured smoke execution probe after readiness is GREEN."""
-    repo_root = _target_repo(repo)
-    _require_project(repo_root)
-    run_smoke_cli.execute(repo_root=repo_root, timeout_sec=timeout_sec, command=command)
+def _format_preflight_summary(issues: list[tuple[str, str]]) -> str:
+    return preflight.format_preflight_summary(issues)
 
 
 @app.command()
@@ -445,7 +279,7 @@ def diagnose(
     By default, this inspects the most recent verify log under .noraa/logs.
     """
     repo_root = _target_repo(repo)
-    _require_project(repo_root)
+    cfg = _require_project(repo_root)
 
     if log_dir_override:
         log_dir_path = Path(log_dir_override)
@@ -466,55 +300,38 @@ def diagnose(
             )
         log_dir_path = candidates[-1]
 
-    code, msg, _, _ = diagnose_log(log_dir_path, repo_root, deps_prefix=None, esmf_mkfile=None)
+    code, msg, _, _ = diagnose_log(
+        log_dir_path,
+        repo_root,
+        deps_prefix=None,
+        esmf_mkfile=None,
+        core=cfg.core,
+    )
     print(msg, end="")
     raise SystemExit(code)
 
 
-def _cmake_version() -> tuple[int, int, int] | None:
-    return preflight.cmake_version()
-
-
-def _verify_preflight_issues(
-    repo_root: Path,
-    *,
-    deps_prefix: str | None,
-    esmf_mkfile: str | None,
-    using_verify_script: bool,
-) -> list[tuple[str, str]]:
-    return preflight.verify_preflight_issues(
-        repo_root,
-        deps_prefix=deps_prefix,
-        esmf_mkfile=esmf_mkfile,
-        using_verify_script=using_verify_script,
-        cmake_version_fn=_cmake_version,
-    )
-
-
-def _verify_preflight_failure(
-    repo_root: Path,
-    *,
-    deps_prefix: str | None,
-    esmf_mkfile: str | None,
-    using_verify_script: bool,
-) -> tuple[str, str] | None:
-    issues = _verify_preflight_issues(
-        repo_root,
-        deps_prefix=deps_prefix,
-        esmf_mkfile=esmf_mkfile,
-        using_verify_script=using_verify_script,
-    )
-    if not issues:
-        return None
-    return issues[0]
-
-
-def _format_preflight_failure(issue: str, action: str) -> str:
-    return f"{issue}\nAction required: {action}"
-
-
-def _format_preflight_summary(issues: list[tuple[str, str]]) -> str:
-    return preflight.format_preflight_summary(issues)
+@app.command("self-test")
+def self_test(
+    repo: str = typer.Option(".", "--repo"),
+    pytest_args: str = typer.Option(
+        "-q",
+        "--pytest-args",
+        help="Arguments forwarded to pytest (quoted string).",
+    ),
+):
+    """Run local NORAA tests for the current checkout with dependency checks."""
+    repo_root = _target_repo(repo)
+    _ensure_pytest_available()
+    args = shlex.split(pytest_args, posix=(os.name != "nt"))
+    cmd = [sys.executable, "-m", "pytest", *args]
+    rc = subprocess.run(cmd, cwd=str(repo_root), text=True, check=False).returncode
+    if rc != 0:
+        fail(
+            "NORAA self-test failed.",
+            next_step=f"{repo_cmd(repo_root, 'self-test')} --pytest-args \"{pytest_args}\"",
+        )
+    print("NORAA self-test passed.")
 
 
 def _python_runtime_error() -> str | None:

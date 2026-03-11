@@ -14,8 +14,10 @@ def render_find_deps_script(
     netcdff_lib: Path | None,
     fms_lib: Path,
     fms_include: str,
+    include_fms_shim: bool = True,
+    include_stochastic_physics_stub: bool = False,
 ) -> str:
-    return (
+    body = (
         f"if(NOT EXISTS \"{lib_dir / 'libbacio_4.a'}\")\n"
         f"  message(FATAL_ERROR \"Missing dependency: {lib_dir / 'libbacio_4.a'}\")\n"
         "endif()\n"
@@ -61,10 +63,6 @@ def render_find_deps_script(
         f"  set_target_properties(PIO::PIO_Fortran PROPERTIES IMPORTED_LOCATION \"{lib_dir / 'libpiof.a'}\" INTERFACE_INCLUDE_DIRECTORIES \"{include_generic}\")\n"
         "  target_link_libraries(PIO::PIO_Fortran INTERFACE PIO::PIO_C)\n"
         "endif()\n"
-        "if(NOT TARGET fms)\n"
-        "  add_library(fms STATIC IMPORTED GLOBAL)\n"
-        f"  set_target_properties(fms PROPERTIES IMPORTED_LOCATION \"{fms_lib}\" INTERFACE_INCLUDE_DIRECTORIES \"{fms_include}\")\n"
-        "endif()\n"
         "if(NOT TARGET NetCDF::NetCDF_Fortran)\n"
         "  add_library(NetCDF::NetCDF_Fortran INTERFACE IMPORTED GLOBAL)\n"
         f"  set_target_properties(NetCDF::NetCDF_Fortran PROPERTIES INTERFACE_INCLUDE_DIRECTORIES \"{include_generic};/usr/include\")\n"
@@ -80,3 +78,25 @@ def render_find_deps_script(
         "endif()\n"
         f"set_source_files_properties(\"{repo_root / 'ccpp/physics/physics/hooks/machine.F'}\" PROPERTIES Fortran_FORMAT FREE COMPILE_FLAGS \"-ffree-form\")\n"
     )
+    if include_fms_shim:
+        fms_block = (
+            "if(NOT TARGET fms)\n"
+            "  add_library(fms STATIC IMPORTED GLOBAL)\n"
+            f"  set_target_properties(fms PROPERTIES IMPORTED_LOCATION \"{fms_lib}\" INTERFACE_INCLUDE_DIRECTORIES \"{fms_include}\")\n"
+            "endif()\n"
+        )
+        insert_after = (
+            "if(NOT TARGET PIO::PIO_Fortran)\n"
+            "  add_library(PIO::PIO_Fortran STATIC IMPORTED GLOBAL)\n"
+            f"  set_target_properties(PIO::PIO_Fortran PROPERTIES IMPORTED_LOCATION \"{lib_dir / 'libpiof.a'}\" INTERFACE_INCLUDE_DIRECTORIES \"{include_generic}\")\n"
+            "  target_link_libraries(PIO::PIO_Fortran INTERFACE PIO::PIO_C)\n"
+            "endif()\n"
+        )
+        body = body.replace(insert_after, insert_after + fms_block)
+    if include_stochastic_physics_stub:
+        body += (
+            "if(NOT TARGET stochastic_physics)\n"
+            "  add_library(stochastic_physics INTERFACE)\n"
+            "endif()\n"
+        )
+    return body

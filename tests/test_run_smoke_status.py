@@ -58,6 +58,75 @@ def test_collect_status_checks_ready(tmp_path: Path) -> None:
     assert "READY: all required checks passed." in text
 
 
+def test_collect_status_checks_fv3_skips_mpas_runtime_requirements(tmp_path: Path) -> None:
+    (tmp_path / ".noraa" / "project.toml").parent.mkdir(parents=True)
+    (tmp_path / ".noraa" / "project.toml").write_text(
+        "[project]\nrepo_path = \"/tmp/x\"\n\n"
+        "[git]\nupstream_url = \"https://github.com/NOAA-EMC/ufsatm.git\"\nallow_fork = false\nfork_url = \"\"\n\n"
+        "[build]\ncore = \"fv3\"\nverify_script = \"scripts/verify_fv3_smoke.sh\"\n",
+        encoding="utf-8",
+    )
+    prebuild = tmp_path / "ccpp" / "framework" / "scripts" / "ccpp_prebuild.py"
+    prebuild.parent.mkdir(parents=True)
+    prebuild.write_text("#!/usr/bin/env python3\n")
+    (tmp_path / ".noraa" / "deps" / "install").mkdir(parents=True)
+    mk = tmp_path / ".noraa" / "esmf" / "install" / "lib" / "esmf.mk"
+    mk.parent.mkdir(parents=True)
+    mk.write_text("ESMF\n")
+    fv3_exe = tmp_path / ".noraa" / "build" / "bin" / "ufs_model"
+    fv3_exe.parent.mkdir(parents=True)
+    fv3_exe.write_text("bin\n")
+
+    checks = run_smoke.collect_status_checks(tmp_path)
+    runtime = next(c for c in checks if c.name == "Runtime-compatible smoke dataset")
+    smoke = next(c for c in checks if c.name == "Smoke-run sample data")
+    deps = next(c for c in checks if c.name == "MPAS dependency bundle")
+    exe = next(c for c in checks if c.name == "Verified FV3 executable")
+    assert smoke.ok is True
+    assert runtime.ok is True
+    assert smoke.applicable is False
+    assert runtime.applicable is False
+    assert deps.applicable is False
+    assert "Not applicable for core=fv3" in runtime.detail
+    assert exe.ok is True
+
+
+def test_format_status_report_shows_na_for_non_applicable_checks() -> None:
+    checks = [
+        run_smoke.StatusCheck(name="A", ok=True, detail="ok", applicable=True),
+        run_smoke.StatusCheck(name="B", ok=True, detail="na", applicable=False),
+    ]
+    text, all_ok = run_smoke.format_status_report(checks)
+    assert all_ok is True
+    assert "GREEN: A [ok]" in text
+    assert "N/A: B [na]" in text
+
+
+def test_collect_status_checks_fv3_accepts_library_artifact(tmp_path: Path) -> None:
+    (tmp_path / ".noraa" / "project.toml").parent.mkdir(parents=True)
+    (tmp_path / ".noraa" / "project.toml").write_text(
+        "[project]\nrepo_path = \"/tmp/x\"\n\n"
+        "[git]\nupstream_url = \"https://github.com/NOAA-EMC/ufsatm.git\"\nallow_fork = false\nfork_url = \"\"\n\n"
+        "[build]\ncore = \"fv3\"\nverify_script = \"scripts/verify_fv3_smoke.sh\"\n",
+        encoding="utf-8",
+    )
+    prebuild = tmp_path / "ccpp" / "framework" / "scripts" / "ccpp_prebuild.py"
+    prebuild.parent.mkdir(parents=True)
+    prebuild.write_text("#!/usr/bin/env python3\n")
+    (tmp_path / ".noraa" / "deps" / "install").mkdir(parents=True)
+    mk = tmp_path / ".noraa" / "esmf" / "install" / "lib" / "esmf.mk"
+    mk.parent.mkdir(parents=True)
+    mk.write_text("ESMF\n")
+    fv3_lib = tmp_path / ".noraa" / "build" / "ufsatm" / "libufsatm_fv3.a"
+    fv3_lib.parent.mkdir(parents=True)
+    fv3_lib.write_text("archive\n")
+
+    checks = run_smoke.collect_status_checks(tmp_path)
+    exe = next(c for c in checks if c.name == "Verified FV3 executable")
+    assert exe.ok is True
+    assert "libufsatm_fv3.a" in exe.detail
+
+
 def test_discover_dataset_candidates_and_fetch(tmp_path: Path, monkeypatch) -> None:
     # Simulate official repo origin lookup
     monkeypatch.setattr(run_smoke, "_git_origin", lambda _p: "https://github.com/NOAA-EMC/ufsatm.git")
@@ -249,6 +318,25 @@ def test_validate_runtime_case_dir_checks_streams_references(tmp_path: Path) -> 
     assert "missing_input.nc" in detail
 
 
+def test_validate_fv3_runtime_case_dir_requires_core_files(tmp_path: Path) -> None:
+    case_dir = tmp_path / "fv3_case"
+    case_dir.mkdir(parents=True)
+    ok, detail = run_smoke.validate_fv3_runtime_case_dir(case_dir)
+    assert ok is False
+    assert "Missing runtime file" in detail
+
+    (case_dir / "input.nml").write_text("&x\n/\n", encoding="utf-8")
+    (case_dir / "model_configure").write_text("x\n", encoding="utf-8")
+    (case_dir / "ufs.configure").write_text("x\n", encoding="utf-8")
+    (case_dir / "diag_table").write_text("x\n", encoding="utf-8")
+    (case_dir / "field_table").write_text("x\n", encoding="utf-8")
+    (case_dir / "INPUT").mkdir()
+
+    ok2, detail2 = run_smoke.validate_fv3_runtime_case_dir(case_dir)
+    assert ok2 is True
+    assert str(case_dir) in detail2
+
+
 def test_format_status_short_not_ready_lists_failed_checks() -> None:
     checks = [
         run_smoke.StatusCheck(name="A", ok=True, detail="a"),
@@ -280,6 +368,127 @@ def test_fetch_official_regtests_dry_run_does_not_download(tmp_path: Path, monke
     output = capsys.readouterr().out
     assert "Dry run: official-regtests fetch preview" in output
     assert called["fetch"] is False
+
+
+def test_fetch_official_regtests_auto_selects_catalog_prefix(tmp_path: Path, monkeypatch, capsys) -> None:
+    monkeypatch.setattr(run_smoke_cli.shutil, "which", lambda _x: "aws")
+    monkeypatch.setattr(
+        run_smoke,
+        "list_official_regtests_prefixes",
+        lambda **_kwargs: [
+            "input-data-20251015/FV3_regional_input_data",
+            "input-data-20251015/MPAS",
+        ],
+    )
+    captured: dict[str, str] = {}
+
+    def _fake_fetch(**kwargs):
+        captured["prefix"] = kwargs["s3_prefix"]
+        return tmp_path / ".noraa" / "runs" / "smoke" / "data" / "dataset.toml"
+
+    monkeypatch.setattr(run_smoke, "fetch_official_regtests_prefix", _fake_fetch)
+
+    run_smoke_cli.fetch_official_regtests(
+        repo_root=tmp_path,
+        s3_prefix=None,
+        dry_run=False,
+        yes=True,
+        catalog_root="input-data-20251015",
+    )
+
+    output = capsys.readouterr().out
+    assert captured["prefix"] == "input-data-20251015/FV3_regional_input_data"
+    assert "Source path: s3://noaa-ufs-regtests-pds/input-data-20251015/FV3_regional_input_data/" in output
+
+
+def test_fetch_official_regtests_interactive_lists_size(tmp_path: Path, monkeypatch, capsys) -> None:
+    monkeypatch.setattr(run_smoke_cli.shutil, "which", lambda _x: "aws")
+    monkeypatch.setattr(
+        run_smoke,
+        "list_official_regtests_prefixes",
+        lambda **_kwargs: [
+            "input-data-20251015/FV3_regional_input_data",
+            "input-data-20251015/MPAS",
+        ],
+    )
+    monkeypatch.setattr(
+        run_smoke,
+        "regtests_prefix_size_bytes",
+        lambda **kwargs: 1024 if kwargs["s3_prefix"].endswith("MPAS") else 3 * 1024 * 1024,
+    )
+    monkeypatch.setattr(
+        run_smoke,
+        "fetch_official_regtests_prefix",
+        lambda **_kwargs: tmp_path / ".noraa" / "runs" / "smoke" / "data" / "dataset.toml",
+    )
+
+    run_smoke_cli.fetch_official_regtests(
+        repo_root=tmp_path,
+        s3_prefix=None,
+        dry_run=False,
+        yes=False,
+        show_size=True,
+        prompt_int=lambda _msg: 2,
+    )
+
+    output = capsys.readouterr().out
+    assert "size: 3.0 MB" in output
+    assert "size: 1.0 KB" in output
+
+
+def test_fetch_official_regtests_blocks_large_prefix_by_default(tmp_path: Path, monkeypatch) -> None:
+    monkeypatch.setattr(run_smoke_cli.shutil, "which", lambda _x: "aws")
+    monkeypatch.setattr(
+        run_smoke,
+        "regtests_prefix_size_bytes",
+        lambda **_kwargs: 8 * 1024 * 1024 * 1024,  # 8 GB
+    )
+    called = {"fetch": False}
+
+    def _unexpected_fetch(**_kwargs):
+        called["fetch"] = True
+        return tmp_path / ".noraa" / "runs" / "smoke" / "data" / "dataset.toml"
+
+    monkeypatch.setattr(run_smoke, "fetch_official_regtests_prefix", _unexpected_fetch)
+
+    try:
+        run_smoke_cli.fetch_official_regtests(
+            repo_root=tmp_path,
+            s3_prefix="input-data-20251015/AQM",
+            dry_run=False,
+            max_size_gb=5.0,
+        )
+        assert False, "Expected SystemExit for oversized prefix"
+    except SystemExit as e:
+        msg = str(e)
+        assert "larger than allowed limit" in msg
+    assert called["fetch"] is False
+
+
+def test_fetch_official_regtests_allows_large_prefix_when_limit_disabled(tmp_path: Path, monkeypatch, capsys) -> None:
+    monkeypatch.setattr(run_smoke_cli.shutil, "which", lambda _x: "aws")
+    monkeypatch.setattr(
+        run_smoke,
+        "regtests_prefix_size_bytes",
+        lambda **_kwargs: 8 * 1024 * 1024 * 1024,  # 8 GB
+    )
+    called = {"fetch": False}
+
+    def _fake_fetch(**_kwargs):
+        called["fetch"] = True
+        return tmp_path / ".noraa" / "runs" / "smoke" / "data" / "dataset.toml"
+
+    monkeypatch.setattr(run_smoke, "fetch_official_regtests_prefix", _fake_fetch)
+
+    run_smoke_cli.fetch_official_regtests(
+        repo_root=tmp_path,
+        s3_prefix="input-data-20251015/AQM",
+        dry_run=False,
+        max_size_gb=None,
+    )
+    output = capsys.readouterr().out
+    assert "Estimated download size:" in output
+    assert called["fetch"] is True
 
 
 def test_fetch_local_dry_run_reports_metadata_only(tmp_path: Path, capsys) -> None:

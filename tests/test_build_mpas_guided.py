@@ -67,7 +67,21 @@ def test_build_mpas_calls_init_and_verify_with_explicit_values(
     assert calls["init"]["force"] is False
     assert calls["init"]["upstream_url"] == "https://github.com/NOAA-EMC/ufsatm.git"
     assert calls["verify"]["repo"] == str(tmp_path)
+    assert calls["verify"]["core"] == "mpas"
     assert calls["verify"]["deps_prefix"] is None
     assert calls["verify"]["esmf_mkfile"] is None
     assert calls["verify"]["clean"] is True
     assert calls["verify"]["preflight_only"] is False
+
+
+def test_build_core_routes_fv3_to_guided_build(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    calls: dict[str, str] = {}
+    monkeypatch.setattr(cli, "_target_repo", lambda _repo: tmp_path)
+    monkeypatch.setattr(cli, "load_project", lambda _repo: None)
+
+    def fake_run_build_core(**kwargs):
+        calls["core"] = kwargs["core"]
+
+    monkeypatch.setattr(cli.guided_build, "run_build_core", fake_run_build_core)
+    cli.build(repo=".", core="fv3", clean=True, yes=True, esmf_branch="v8.6.1")
+    assert calls["core"] == "fv3"

@@ -1,22 +1,21 @@
 id: mpi-esmf-mismatch
-title: ESMF and MPAS built against different MPI stacks
+title: ESMF and selected core built against different MPI stacks
 severity: error
 match_any_regex:
   - "undefined reference to .*ompi_"
   - "undefined reference to ompi_"
   - "ompi_op_set_cxx_callback"
   - "ompi_mpi_errors_throw_exceptions"
-  - "libmpi_cxx\\.so"
 summary: >
   The build is mixing two different Open MPI runtimes (often system Open MPI vs a deps Open MPI).
 likely_cause: >
-  ESMF was built or linked against a different MPI than the MPI wrappers used for the ufsatm MPAS build.
+  ESMF was built or linked against a different MPI than the MPI wrappers used for the selected ufsatm core build.
 evidence_commands:
   - "which mpicc mpifort mpiexec || true"
   - "mpiexec --version || true"
   - "echo DEPS_PREFIX=$DEPS_PREFIX"
   - "echo ESMFMKFILE=$ESMFMKFILE"
-  - "test -f \"{mpas_exe}\" && ldd \"{mpas_exe}\" | grep -E 'libmpi|open-pal|pmix|open-rte' || true"
+  - "test -f \"{core_exe}\" && ldd \"{core_exe}\" | grep -E 'libmpi|open-pal|pmix|open-rte' || true"
 fix_steps:
   - "# 1) Ensure you are using the intended MPI wrappers"
   - "# Detected mpi_prefix from postcheck (if available): {mpi_prefix}"
@@ -37,6 +36,4 @@ fix_steps:
   - "export ESMFMKFILE=\"{esmf_mkfile}\""
   - ""
   - "# 4) Re-run verify"
-  - "cd \"{repo_root}\""
-  - "rm -rf .noraa/build"
-  - "DEPS_PREFIX=\"$DEPS_PREFIX\" ESMFMKFILE=\"$ESMFMKFILE\" bash scripts/verify_mpas_smoke.sh"
+  - "{verify_command}"

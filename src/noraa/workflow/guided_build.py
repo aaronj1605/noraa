@@ -26,22 +26,25 @@ def confirm_or_fail(
     fail(failure_message, next_step=next_step)
 
 
-def run_build_mpas(
+def run_build_core(
     *,
     repo_root: Path,
     clean: bool,
     yes: bool,
     esmf_branch: str,
+    core: str,
     confirm_fn: Callable[[str], bool],
     init_project_fn: Callable[[Path], None],
     require_project_fn: Callable[[Path], None],
-    verify_fn: Callable[[Path, bool], None],
+    verify_fn: Callable[[Path, bool, str], None],
 ) -> None:
+    core_norm = (core or "mpas").lower()
+    core_upper = core_norm.upper()
     notice(
         "NORAA Guided Build",
         [
             f"Repository: {repo_root}",
-            "Goal: initialize, resolve blockers, and verify MPAS build.",
+            f"Goal: initialize, resolve blockers, and verify {core_upper} build.",
         ],
     )
     fixes: list[str] = []
@@ -75,7 +78,7 @@ def run_build_mpas(
             next_step="git submodule update --init --recursive",
             confirm_fn=confirm_fn,
         )
-        out = log_dir(repo_root, "build-mpas-submodules")
+        out = log_dir(repo_root, f"build-{core_norm}-submodules")
         env = os.environ.copy()
         write_env_snapshot(out, env)
         write_tool_snapshot(out, env)
@@ -111,22 +114,46 @@ def run_build_mpas(
     if bootstrapped_deps_prefix(repo_root) is None:
         notice(
             "Issue Identified",
-            ["MPAS dependency bundle is missing under .noraa/deps/install."],
+            ["UFS dependency bundle is missing under .noraa/deps/install."],
         )
         confirm_or_fail(
-            prompt="MPAS dependency bundle is missing under .noraa/deps/install. Bootstrap deps now?",
+            prompt="UFS dependency bundle is missing under .noraa/deps/install. Bootstrap deps now?",
             assume_yes=yes,
-            failure_message="Issue identified: MPAS dependency bundle is required before verify can run.",
+            failure_message="Issue identified: UFS dependency bundle is required before verify can run.",
             next_step=repo_cmd(repo_root, "bootstrap", "deps"),
             confirm_fn=confirm_fn,
         )
         bootstrap_deps(repo_root)
-        fixes.append("Bootstrapped MPAS dependency bundle under .noraa/deps/install.")
+        fixes.append("Bootstrapped UFS dependency bundle under .noraa/deps/install.")
         notice("Fix Implemented", [fixes[-1]])
 
-    notice("NORAA Action", ["Running verify (MPAS only)..."])
-    verify_fn(repo_root, clean)
+    notice("NORAA Action", [f"Running verify ({core_upper})..."])
+    verify_fn(repo_root, clean, core_norm)
     summary(
         fixes=fixes,
         next_step=repo_cmd(repo_root, "run-smoke", "status"),
+    )
+
+
+def run_build_mpas(
+    *,
+    repo_root: Path,
+    clean: bool,
+    yes: bool,
+    esmf_branch: str,
+    confirm_fn: Callable[[str], bool],
+    init_project_fn: Callable[[Path], None],
+    require_project_fn: Callable[[Path], None],
+    verify_fn: Callable[[Path, bool], None],
+) -> None:
+    run_build_core(
+        repo_root=repo_root,
+        clean=clean,
+        yes=yes,
+        esmf_branch=esmf_branch,
+        core="mpas",
+        confirm_fn=confirm_fn,
+        init_project_fn=init_project_fn,
+        require_project_fn=require_project_fn,
+        verify_fn=lambda p, do_clean, _core: verify_fn(p, do_clean),
     )

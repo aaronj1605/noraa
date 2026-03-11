@@ -43,6 +43,40 @@ def test_fetch_local_dataset_replaces_existing_dataset_dir(tmp_path: Path) -> No
     assert (data_root / "x1.40962.init.nc").exists()
 
 
+def test_fetch_local_dataset_auto_fix_injects_reference_time(tmp_path: Path) -> None:
+    src = tmp_path / "source"
+    src.mkdir()
+    (src / "namelist.atmosphere").write_text(
+        "&nhyd_model\n config_calendar_type='gregorian'\n config_start_time='2012-01-01_00:00:00'\n/\n",
+        encoding="utf-8",
+    )
+    (src / "streams.atmosphere").write_text(
+        '<streams>\n'
+        '<immutable_stream name="input" type="input" filename_template="x1.40962.init.nc" input_interval="initial_only"/>\n'
+        '<stream name="surface" type="input" filename_template="x1.40962.sfc_update.nc" input_interval="none"/>\n'
+        "</streams>\n",
+        encoding="utf-8",
+    )
+    (src / "x1.40962.init.nc").write_text("x\n", encoding="utf-8")
+
+    run_smoke.fetch_local_dataset(
+        repo_root=tmp_path,
+        local_path=src,
+        dataset_name="sample",
+        auto_fix_mpas_compat=True,
+    )
+
+    imported = tmp_path / ".noraa" / "runs" / "smoke" / "data" / "sample"
+    streams_text = (imported / "streams.atmosphere").read_text(encoding="utf-8")
+    assert 'reference_time="2012-01-01_00:00:00"' in streams_text
+    assert (imported / "x1.40962.sfc_update.nc").exists()
+
+    manifest = (tmp_path / ".noraa" / "runs" / "smoke" / "data" / "dataset.toml").read_text(
+        encoding="utf-8"
+    )
+    assert "compat_fixes = [" in manifest
+
+
 def test_safe_extract_tar_gz_blocks_path_traversal(tmp_path: Path) -> None:
     archive = tmp_path / "bad.tar.gz"
     payload = tmp_path / "payload.txt"

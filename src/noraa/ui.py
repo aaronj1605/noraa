@@ -34,3 +34,5 @@ def summary(*, fixes: list[str], next_step: str) -> None:
     lines.append("")
     lines.append(f"Run this command next: {next_step}")
     notice("NORAA Summary", lines)
+    # Print a plain line outside the rich panel for reliable copy/paste in narrow terminals.
+    print(f"NORAA_NEXT_CMD: {next_step}")

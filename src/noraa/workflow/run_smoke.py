@@ -11,6 +11,7 @@ import hashlib
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
+from urllib.parse import urlparse
 
 try:
     import tomllib  # py311+
@@ -19,6 +20,7 @@ except Exception:  # pragma: no cover
 
 from ..buildsystem.paths import bootstrapped_deps_prefix, bootstrapped_esmf_mk
 from ..messages import repo_cmd
+from ..project import load_project
 from ..util import safe_check_output
 
 HTF_REGISTRY_URL = "https://registry.opendata.aws/noaa-ufs-htf-pds"
@@ -33,6 +35,7 @@ class StatusCheck:
     ok: bool
     detail: str
     action_required: str | None = None
+    applicable: bool = True
 
 
 @dataclass(frozen=True)
@@ -62,9 +65,12 @@ class ExecuteResult:
     command: list[str]
     returncode: int | None
     reason: str
+    artifacts: tuple[str, ...] = ()
 
 
 def execution_label(result: ExecuteResult) -> str:
+    if result.ok and result.artifacts:
+        return "PASS_WITH_OUTPUT"
     if result.returncode == 0:
         return "PASS"
     if result.ok and result.returncode is None:
@@ -134,6 +140,8 @@ def _safe_extract_tar_gz(archive_path: Path, dest_dir: Path) -> None:
     dest_resolved = dest_dir.resolve()
     with tarfile.open(archive_path, "r:gz") as tf:
         members = tf.getmembers()
+        total_members = len(members)
+        total_bytes = sum(m.size for m in members if m.isreg())
         for member in members:
             name = member.name
             if name.startswith("/") or name.startswith("\\"):
@@ -143,7 +151,28 @@ def _safe_extract_tar_gz(archive_path: Path, dest_dir: Path) -> None:
             target = (dest_dir / name).resolve()
             if not str(target).startswith(str(dest_resolved) + os.sep) and target != dest_resolved:
                 raise ValueError(f"Unsafe archive member traversal: {name}")
-        tf.extractall(path=dest_dir, members=members)
+        print(
+            "Extracting archive "
+            f"({total_members} entries, {total_bytes / (1024 * 1024):.1f} MiB payload)..."
+        )
+        extracted_bytes = 0
+        # Emit progress every ~5%.
+        thresholds = [i / 20 for i in range(1, 21)]
+        next_threshold_idx = 0
+        for idx, member in enumerate(members, start=1):
+            try:
+                tf.extract(member, path=dest_dir, filter="data")
+            except TypeError:
+                tf.extract(member, path=dest_dir)
+            if member.isreg():
+                extracted_bytes += member.size
+            if total_bytes > 0 and next_threshold_idx < len(thresholds):
+                progress = extracted_bytes / total_bytes
+                if progress >= thresholds[next_threshold_idx]:
+                    pct = int(thresholds[next_threshold_idx] * 100)
+                    print(f"Extract progress: {pct}% ({idx}/{total_members} entries)")
+                    next_threshold_idx += 1
+        print("Extract complete.")
 
 
 def _validate_s3_prefix(prefix: str) -> str:
@@ -158,6 +187,32 @@ def _validate_s3_prefix(prefix: str) -> str:
     if any(part in {"", ".", ".."} for part in parts):
         raise ValueError("s3_prefix contains unsafe path segments")
     return cleaned
+
+
+def _download_url_with_progress(url: str, dest_path: Path) -> None:
+    basename = Path(urlparse(url).path).name or dest_path.name
+    print(f"Downloading {basename} ...")
+
+    last_pct = {"value": -1}
+
+    def _hook(block_count: int, block_size: int, total_size: int) -> None:
+        if total_size <= 0:
+            # Unknown size; print sparse heartbeat.
+            if block_count % 2048 == 0:
+                print(f"Download in progress: {block_count * block_size / (1024 * 1024):.1f} MiB")
+            return
+        downloaded = block_count * block_size
+        pct = int(min(100, (downloaded * 100) / total_size))
+        if pct >= last_pct["value"] + 5:
+            last_pct["value"] = pct
+            print(f"Download progress: {pct}%")
+
+    try:
+        urllib.request.urlretrieve(url, dest_path, _hook)
+    except TypeError:
+        # Some test doubles or environments expose a 2-arg urlretrieve.
+        urllib.request.urlretrieve(url, dest_path)
+    print("Download complete.")
 
 
 def _looks_like_ic_file(nc: Path) -> bool:
@@ -215,6 +270,12 @@ def _dataset_manifest_path(repo_root: Path) -> Path:
 
 def _dataset_root(repo_root: Path) -> Path:
     return repo_root / ".noraa" / "runs" / "smoke" / "data"
+
+
+def _selected_core(repo_root: Path) -> str:
+    cfg = load_project(repo_root)
+    core = (cfg.core if cfg else "mpas").strip().lower()
+    return core if core in {"mpas", "fv3"} else "mpas"
 
 
 def _load_dataset_manifest(repo_root: Path) -> dict | None:
@@ -351,7 +412,7 @@ def fetch_official_bundle(*, repo_root: Path, dataset: OfficialDataset) -> Path:
 
     archive_name = dataset.url.split("/")[-1] or f"{safe_id}.tar.gz"
     archive_path = bundle_dir / archive_name
-    urllib.request.urlretrieve(dataset.url, archive_path)
+    _download_url_with_progress(dataset.url, archive_path)
     archive_sha256 = _sha256_file(archive_path)
     if dataset.sha256 and archive_sha256.lower() != dataset.sha256.lower():
         raise ValueError(
@@ -452,7 +513,136 @@ def fetch_official_regtests_prefix(
     return manifest
 
 
-def fetch_local_dataset(*, repo_root: Path, local_path: Path, dataset_name: str = "local_user_data") -> Path:
+def list_official_regtests_prefixes(
+    *,
+    aws_bin: str = "aws",
+    catalog_root: str = "input-data-20251015",
+) -> list[str]:
+    """
+    Discover one-level dataset prefixes under the regtests bucket catalog root.
+    Returns values like: input-data-20251015/FV3_regional_input_data
+    """
+    root = _validate_s3_prefix(catalog_root)
+    source_path = f"{REGTESTS_BUCKET}/{root}/"
+    out = subprocess.check_output(
+        [aws_bin, "s3", "ls", "--no-sign-request", source_path],
+        text=True,
+        stderr=subprocess.STDOUT,
+    )
+    prefixes: list[str] = []
+    for line in out.splitlines():
+        m = re.search(r"PRE\s+(.+?)/\s*$", line)
+        if not m:
+            continue
+        child = m.group(1).strip()
+        if not child or child in {".", ".."}:
+            continue
+        prefixes.append(f"{root}/{child}")
+    return sorted(set(prefixes))
+
+
+def regtests_prefix_size_bytes(*, s3_prefix: str, aws_bin: str = "aws") -> int | None:
+    """
+    Return total size in bytes for a regtests prefix via `aws s3 ls --summarize`.
+    Returns None when size cannot be parsed.
+    """
+    prefix = _validate_s3_prefix(s3_prefix)
+    source_path = f"{REGTESTS_BUCKET}/{prefix}/"
+    out = subprocess.check_output(
+        [aws_bin, "s3", "ls", "--no-sign-request", "--recursive", "--summarize", source_path],
+        text=True,
+        stderr=subprocess.STDOUT,
+    )
+    for line in reversed(out.splitlines()):
+        m = re.search(r"Total Size:\s*([0-9]+)", line)
+        if m:
+            return int(m.group(1))
+    return None
+
+
+def _extract_start_time_hint(namelist_path: Path) -> str:
+    default = "2010-10-23_00:00:00"
+    if not namelist_path.exists():
+        return default
+    text = namelist_path.read_text(encoding="utf-8", errors="ignore")
+    for key in ("config_start_time", "mpas_start_time"):
+        m = re.search(rf"{key}\s*=\s*['\"]([^'\"]+)['\"]", text)
+        if m:
+            return m.group(1).strip() or default
+    return default
+
+
+def _inject_input_reference_time(streams_text: str, reference_time: str) -> tuple[str, bool]:
+    block_match = re.search(
+        r'(<immutable_stream[^>]*name\s*=\s*"input"[\s\S]*?/>)',
+        streams_text,
+        flags=re.IGNORECASE,
+    )
+    if block_match is None:
+        return streams_text, False
+    block = block_match.group(1)
+    if "reference_time=" in block:
+        return streams_text, False
+    if "input_interval=" in block:
+        updated_block = re.sub(
+            r"(\s+input_interval=)",
+            f' reference_time="{reference_time}"\\1',
+            block,
+            count=1,
+        )
+    else:
+        updated_block = block.replace(
+            "/>",
+            f'\n                  reference_time="{reference_time}"/>',
+            1,
+        )
+    return (
+        streams_text[: block_match.start()] + updated_block + streams_text[block_match.end() :],
+        True,
+    )
+
+
+def _apply_local_mpas_compat_fixes(case_dir: Path) -> list[str]:
+    fixes: list[str] = []
+    namelist = case_dir / "namelist.atmosphere"
+    streams = case_dir / "streams.atmosphere"
+    if not streams.exists():
+        return fixes
+
+    reference_time = _extract_start_time_hint(namelist)
+    original = streams.read_text(encoding="utf-8", errors="ignore")
+    updated, changed = _inject_input_reference_time(original, reference_time)
+    if changed:
+        streams.write_text(updated, encoding="utf-8")
+        fixes.append(f'Added reference_time="{reference_time}" to input stream')
+
+    try:
+        missing_refs = _missing_stream_references(case_dir, streams)
+    except Exception:
+        missing_refs = []
+    case_root = case_dir.resolve()
+    for p in missing_refs:
+        try:
+            resolved = p.resolve()
+        except Exception:
+            continue
+        if not str(resolved).startswith(str(case_root) + os.sep):
+            continue
+        name = p.name.lower()
+        if name in {"sfc_update.nc", "x1.40962.sfc_update.nc"}:
+            p.parent.mkdir(parents=True, exist_ok=True)
+            p.touch(exist_ok=True)
+            fixes.append(f"Created placeholder runtime file: {p.name}")
+    return fixes
+
+
+def fetch_local_dataset(
+    *,
+    repo_root: Path,
+    local_path: Path,
+    dataset_name: str = "local_user_data",
+    auto_fix_mpas_compat: bool = True,
+) -> Path:
     data_root = _dataset_root(repo_root)
     data_root.mkdir(parents=True, exist_ok=True)
     safe_name = _sanitize_dataset_name(dataset_name)
@@ -476,8 +666,16 @@ def fetch_local_dataset(*, repo_root: Path, local_path: Path, dataset_name: str 
             raise ValueError("local_path cannot be a symlink")
         shutil.copy2(local_path, target_dir / local_path.name)
 
+    fixes: list[str] = []
+    if auto_fix_mpas_compat and local_path.is_dir():
+        fixes = _apply_local_mpas_compat_fixes(target_dir)
+
     manifest = _dataset_manifest_path(repo_root)
     local_norm = str(local_path).replace("\\", "/")
+    escaped = [f.replace("\\", "\\\\").replace('"', '\\"') for f in fixes]
+    fixes_line = ""
+    if escaped:
+        fixes_line = "compat_fixes = [" + ", ".join(f'"{x}"' for x in escaped) + "]\n"
     manifest.write_text(
         "[dataset]\n"
         f'name = "{safe_name}"\n'
@@ -485,6 +683,7 @@ def fetch_local_dataset(*, repo_root: Path, local_path: Path, dataset_name: str 
         f'source_path = "{local_norm}"\n'
         f'bundle_dir = "{safe_name}"\n'
         "runtime_compatible = true\n"
+        f"{fixes_line}"
         'runtime_note = "User-provided dataset. NORAA will validate required runtime files."\n',
         encoding="utf-8",
     )
@@ -684,18 +883,76 @@ def validate_runtime_case_dir(case_dir: Path) -> tuple[bool, str]:
     return True, str(case_dir)
 
 
+def validate_fv3_runtime_case_dir(case_dir: Path) -> tuple[bool, str]:
+    required = [
+        case_dir / "input.nml",
+        case_dir / "model_configure",
+        case_dir / "ufs.configure",
+        case_dir / "diag_table",
+        case_dir / "field_table",
+    ]
+    for path in required:
+        if not path.exists():
+            return False, f"Missing runtime file: {path}"
+    if not (case_dir / "INPUT").exists() and not (case_dir / "RESTART").exists():
+        return (
+            False,
+            (
+                "Missing runtime directory: expected INPUT/ or RESTART/ in "
+                f"{case_dir}"
+            ),
+        )
+    return True, str(case_dir)
+
+
 def validate_runtime_data(repo_root: Path) -> tuple[bool, str, str]:
     return smoke_runtime_compatibility(repo_root)
 
 
+def local_dataset_compat_fixes(repo_root: Path) -> list[str]:
+    manifest = _load_dataset_manifest(repo_root)
+    if manifest is None:
+        return []
+    dataset = manifest.get("dataset", {})
+    fixes = dataset.get("compat_fixes")
+    if not isinstance(fixes, list):
+        return []
+    return [str(x) for x in fixes]
+
+
 def collect_status_checks(repo_root: Path) -> list[StatusCheck]:
+    core = _selected_core(repo_root)
     project_file = repo_root / ".noraa" / "project.toml"
     ccpp_prebuild = repo_root / "ccpp" / "framework" / "scripts" / "ccpp_prebuild.py"
     deps_prefix = bootstrapped_deps_prefix(repo_root)
     esmf_mk = bootstrapped_esmf_mk(repo_root)
-    mpas_exe = repo_root / ".noraa" / "build" / "bin" / "mpas_atmosphere"
-    smoke_ok, smoke_detail = _smoke_data_ready(repo_root)
-    runtime_ok, runtime_detail, runtime_action = smoke_runtime_compatibility(repo_root)
+    if core == "fv3":
+        exe_candidates = [
+            repo_root / ".noraa" / "build" / "bin" / "ufs_model",
+            repo_root / ".noraa" / "build" / "ufs_model",
+            repo_root / "build" / "ufs_model",
+            repo_root / ".noraa" / "build" / "ufsatm" / "libufsatm_fv3.a",
+            repo_root / ".noraa" / "build" / "ufsatm" / "libufsatm_fv3.so",
+        ]
+        verify_action = f"{repo_cmd(repo_root, 'verify')} --core fv3"
+        smoke_ok, smoke_detail = True, "Not applicable for core=fv3."
+        runtime_ok, runtime_detail, runtime_action = (
+            True,
+            "Not applicable for core=fv3 (use --command with a valid FV3/UFS runtime directory).",
+            "",
+        )
+        deps_ok = True
+        deps_detail = "Not applicable for core=fv3."
+        deps_action = None
+    else:
+        exe_candidates = [repo_root / ".noraa" / "build" / "bin" / "mpas_atmosphere"]
+        verify_action = f"{repo_cmd(repo_root, 'verify')} --core mpas"
+        smoke_ok, smoke_detail = _smoke_data_ready(repo_root)
+        runtime_ok, runtime_detail, runtime_action = smoke_runtime_compatibility(repo_root)
+        deps_ok = deps_prefix is not None
+        deps_detail = str(deps_prefix) if deps_prefix else str(repo_root / ".noraa" / "deps" / "install")
+        deps_action = repo_cmd(repo_root, "bootstrap", "deps")
+    selected_exe = next((p for p in exe_candidates if p.exists()), exe_candidates[0])
 
     return [
         StatusCheck(
@@ -718,54 +975,60 @@ def collect_status_checks(repo_root: Path) -> list[StatusCheck]:
         ),
         StatusCheck(
             name="MPAS dependency bundle",
-            ok=deps_prefix is not None,
-            detail=str(deps_prefix) if deps_prefix else str(repo_root / ".noraa" / "deps" / "install"),
-            action_required=repo_cmd(repo_root, "bootstrap", "deps"),
+            ok=deps_ok,
+            detail=deps_detail,
+            action_required=deps_action,
+            applicable=(core == "mpas"),
         ),
         StatusCheck(
-            name="Verified MPAS executable",
-            ok=mpas_exe.exists(),
-            detail=str(mpas_exe),
-            action_required=repo_cmd(repo_root, "verify"),
+            name=f"Verified {core.upper()} executable",
+            ok=selected_exe.exists(),
+            detail=str(selected_exe),
+            action_required=verify_action,
         ),
         StatusCheck(
             name="Smoke-run sample data",
             ok=smoke_ok,
             detail=smoke_detail,
             action_required=repo_cmd(repo_root, "run-smoke", "fetch-data", "official"),
+            applicable=(core == "mpas"),
         ),
         StatusCheck(
             name="Runtime-compatible smoke dataset",
             ok=runtime_ok,
             detail=runtime_detail,
             action_required=runtime_action or repo_cmd(repo_root, "run-smoke", "fetch-data", "local"),
+            applicable=(core == "mpas"),
         ),
     ]
 
 
 def format_status_report(checks: list[StatusCheck]) -> tuple[str, bool]:
-    all_ok = all(c.ok for c in checks)
+    all_ok = all(c.ok for c in checks if c.applicable)
     lines = ["NORAA run-smoke readiness status:"]
     for c in checks:
-        flag = "GREEN" if c.ok else "RED"
+        if not c.applicable:
+            flag = "N/A"
+        else:
+            flag = "GREEN" if c.ok else "RED"
         lines.append(f"{flag}: {c.name} [{c.detail}]")
-        if not c.ok and c.action_required:
+        if c.applicable and (not c.ok) and c.action_required:
             lines.append(f"Action required: {c.action_required}")
     lines.append("READY: all required checks passed." if all_ok else "NOT READY: fix RED items before run-smoke execute.")
     return "\n".join(lines), all_ok
 
 
 def format_status_short(checks: list[StatusCheck]) -> tuple[str, bool]:
-    all_ok = all(c.ok for c in checks)
+    all_ok = all(c.ok for c in checks if c.applicable)
     if all_ok:
         return "READY", True
-    failing = [c.name for c in checks if not c.ok]
+    failing = [c.name for c in checks if c.applicable and not c.ok]
     return "NOT READY: " + "; ".join(failing), False
 
 
 def first_blocking_action(checks: list[StatusCheck]) -> str | None:
     for check in checks:
-        if not check.ok and check.action_required:
+        if check.applicable and (not check.ok) and check.action_required:
             return check.action_required
     return None
 
@@ -776,6 +1039,75 @@ def _looks_like_runtime_ok(stdout_text: str, stderr_text: str) -> bool:
     return any(marker in text for marker in markers)
 
 
+def _looks_like_runtime_ok_from_logs(run_dir: Path) -> bool:
+    """
+    MPAS often writes startup/runtime diagnostics into log.atmosphere.*.out
+    instead of stdout/stderr. Treat those as runtime-reached signals.
+    """
+    markers = (
+        "reading namelist from file namelist.atmosphere",
+        "initializing mpas_streaminfo from file streams.atmosphere",
+        "reading streams configuration from file streams.atmosphere",
+        "bootstrapping framework with mesh fields",
+    )
+    for p in run_dir.glob("log.atmosphere.*.out"):
+        try:
+            text = p.read_text(encoding="utf-8", errors="ignore").lower()
+        except Exception:
+            continue
+        if any(m in text for m in markers):
+            return True
+    return False
+
+
+def _collect_output_artifacts(run_dir: Path) -> tuple[str, ...]:
+    patterns = (
+        "history*.nc",
+        "diag*.nc",
+        "restart*.nc",
+        "output*.nc",
+    )
+    found: list[str] = []
+    for pattern in patterns:
+        for p in sorted(run_dir.glob(pattern)):
+            if p.is_file():
+                found.append(p.name)
+    return tuple(dict.fromkeys(found))
+
+
+def _remove_stale_output_artifacts(run_dir: Path) -> None:
+    for pattern in ("history*.nc", "diag*.nc", "restart*.nc", "output*.nc"):
+        for p in run_dir.glob(pattern):
+            if p.is_file():
+                try:
+                    p.unlink()
+                except Exception:
+                    continue
+
+
+def _fatal_runtime_marker(stdout_text: str, stderr_text: str, run_dir: Path) -> str | None:
+    blob = f"{stdout_text}\n{stderr_text}".lower()
+    for p in run_dir.glob("log.atmosphere.*.out"):
+        try:
+            blob += "\n" + p.read_text(encoding="utf-8", errors="ignore").lower()
+        except Exception:
+            continue
+    for p in run_dir.glob("log.atmosphere.*.err"):
+        try:
+            blob += "\n" + p.read_text(encoding="utf-8", errors="ignore").lower()
+        except Exception:
+            continue
+    if "xml stream parser failed" in blob:
+        return "xml stream parser failed"
+    if "need real calendar" in blob:
+        return "esmf calendar initialization failed (need real calendar)"
+    if "invalid datetime string" in blob:
+        return "invalid datetime string in runtime inputs/streams"
+    if "could not open input file" in blob:
+        return "runtime input file open failed"
+    return None
+
+
 def _smoke_exec_dir(repo_root: Path) -> Path:
     ts = datetime.now().strftime("%Y%m%d-%H%M%S")
     out = repo_root / ".noraa" / "runs" / "smoke" / "exec" / ts
@@ -783,23 +1115,61 @@ def _smoke_exec_dir(repo_root: Path) -> Path:
     return out
 
 
+def _stage_case_into_run_dir(repo_root: Path, run_dir: Path) -> Path | None:
+    manifest = _load_dataset_manifest(repo_root)
+    if manifest is None:
+        return None
+    dataset = manifest.get("dataset", {})
+    case_dir = _resolve_case_dir(repo_root, dataset)
+    if case_dir is None or not case_dir.exists() or not case_dir.is_dir():
+        return None
+    for item in case_dir.iterdir():
+        if item.is_symlink():
+            continue
+        dest = run_dir / item.name
+        if item.is_dir():
+            shutil.copytree(item, dest, dirs_exist_ok=True)
+        else:
+            shutil.copy2(item, dest)
+    return case_dir
+
+
+def _default_smoke_command(repo_root: Path) -> list[str]:
+    core = _selected_core(repo_root)
+    if core == "fv3":
+        candidates = [
+            repo_root / ".noraa" / "build" / "bin" / "ufs_model",
+            repo_root / ".noraa" / "build" / "ufs_model",
+            repo_root / "build" / "ufs_model",
+        ]
+    else:
+        candidates = [repo_root / ".noraa" / "build" / "bin" / "mpas_atmosphere"]
+    exe = next((p for p in candidates if p.exists()), candidates[0])
+    return [str(exe)]
+
+
 def execute_smoke(
     *,
     repo_root: Path,
     timeout_sec: int = 20,
     command_text: str | None = None,
+    require_artifacts: bool = False,
 ) -> ExecuteResult:
     run_dir = _smoke_exec_dir(repo_root)
-    mpas_exe = repo_root / ".noraa" / "build" / "bin" / "mpas_atmosphere"
+    core = _selected_core(repo_root)
     command = (
         shlex.split(command_text, posix=(os.name != "nt"))
         if command_text
-        else [str(mpas_exe)]
+        else _default_smoke_command(repo_root)
     )
+    if not command_text and core == "mpas":
+        _stage_case_into_run_dir(repo_root, run_dir)
 
-    (run_dir / "command.txt").write_text(" ".join(command) + "\n", encoding="utf-8")
+    command_record = " ".join(command) + "\n"
+    (run_dir / "command.txt").write_text(command_record, encoding="utf-8")
     stdout_path = run_dir / "stdout.txt"
     stderr_path = run_dir / "stderr.txt"
+    _remove_stale_output_artifacts(run_dir)
 
     try:
         proc = subprocess.run(
@@ -814,26 +1184,54 @@ def execute_smoke(
         stderr_path.write_text(proc.stderr or "", encoding="utf-8")
 
         if proc.returncode == 0:
-            reason = "Smoke execution command completed successfully."
-            ok = True
-        elif _looks_like_runtime_ok(proc.stdout or "", proc.stderr or ""):
-            reason = (
-                "Smoke execution reached runtime checks (non-zero exit, but executable launched and "
-                "reported expected runtime input/namelist guidance)."
-            )
-            ok = True
+            artifacts = _collect_output_artifacts(run_dir)
+            if require_artifacts and not artifacts:
+                reason = (
+                    "Smoke execution command returned success, but no output artifacts were produced "
+                    "(expected history*/diag*/restart*/output*.nc)."
+                )
+                ok = False
+            else:
+                reason = "Smoke execution command completed successfully."
+                ok = True
+        elif _looks_like_runtime_ok(proc.stdout or "", proc.stderr or "") or _looks_like_runtime_ok_from_logs(run_dir):
+            artifacts = _collect_output_artifacts(run_dir)
+            fatal = _fatal_runtime_marker(proc.stdout or "", proc.stderr or "", run_dir)
+            if fatal:
+                reason = f"Smoke execution reached runtime but failed: {fatal}."
+                ok = False
+            elif require_artifacts and not artifacts:
+                reason = (
+                    "Smoke execution reached runtime checks, but produced no output artifacts "
+                    "(expected history*/diag*/restart*/output*.nc)."
+                )
+                ok = False
+            else:
+                reason = (
+                    "Smoke execution reached runtime checks (non-zero exit, but executable launched and "
+                    "reported expected runtime input/namelist guidance)."
+                )
+                ok = True
         else:
             reason = f"Smoke execution failed with return code {proc.returncode}."
             ok = False
+            artifacts = _collect_output_artifacts(run_dir)
         returncode: int | None = proc.returncode
     except subprocess.TimeoutExpired as exc:
         stdout_path.write_text(exc.stdout or "", encoding="utf-8")
         stderr_path.write_text(exc.stderr or "", encoding="utf-8")
-        reason = (
-            f"Smoke execution exceeded timeout ({timeout_sec}s) after launch. "
-            "Process started; treat as runtime-reachable."
-        )
-        ok = True
+        artifacts = _collect_output_artifacts(run_dir)
+        if require_artifacts and not artifacts:
+            reason = (
+                f"Smoke execution exceeded timeout ({timeout_sec}s) after launch and produced no output artifacts."
+            )
+            ok = False
+        else:
+            reason = (
+                f"Smoke execution exceeded timeout ({timeout_sec}s) after launch. "
+                "Process started; treat as runtime-reachable."
+            )
+            ok = True
         returncode = None
     except FileNotFoundError:
         stdout_path.write_text("", encoding="utf-8")
@@ -841,6 +1239,7 @@ def execute_smoke(
         reason = "Smoke execution command could not be launched."
         ok = False
         returncode = None
+        artifacts = ()
 
     (run_dir / "result.txt").write_text(
         "\n".join(
@@ -848,9 +1247,17 @@ def execute_smoke(
                 f"ok={str(ok).lower()}",
                 f"returncode={'' if returncode is None else returncode}",
                 f"reason={reason}",
+                f"artifacts={','.join(artifacts)}",
             ]
         )
         + "\n",
         encoding="utf-8",
     )
-    return ExecuteResult(ok=ok, run_dir=run_dir, command=command, returncode=returncode, reason=reason)
+    return ExecuteResult(
+        ok=ok,
+        run_dir=run_dir,
+        command=command,
+        returncode=returncode,
+        reason=reason,
+        artifacts=artifacts,
+    )

@@ -1,0 +1,16 @@
+id: fv3-stochastic-physics-target-missing
+title: FV3 top-level dependency target missing (stochastic_physics)
+severity: error
+match_any_regex:
+  - "dependency target\\s+\"stochastic_physics\"\\s+of target\\s+\"ufsatm_fv3\"\\s+does\\s+not\\s+exist"
+  - "requires target \"stochastic_physics\" that is not in any export set"
+summary: >
+  Top-level ufsatm CMake expects stochastic_physics target, but it was not created in this configure path.
+likely_cause: >
+  Current FV3 configure options/path did not define stochastic_physics while add_dependencies still requires it.
+evidence_commands:
+  - "nl -ba \"{repo_root}/CMakeLists.txt\" | sed -n '180,205p' || true"
+fix_steps:
+  - "# Guard the dependency on optional stochastic_physics target in local ufsatm checkout"
+  - "sed -i 's/add_dependencies(ufsatm_fv3 stochastic_physics)/if(TARGET stochastic_physics)\\n  add_dependencies(ufsatm_fv3 stochastic_physics)\\nendif()/g' \"{repo_root}/CMakeLists.txt\""
+  - "{verify_command}"

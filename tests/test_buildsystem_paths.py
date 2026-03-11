@@ -26,6 +26,18 @@ def test_detect_verify_script_prefers_mpas_smoke(tmp_path: Path) -> None:
     assert found == verify_smoke
 
 
+def test_detect_verify_script_prefers_fv3_smoke_for_fv3_core(tmp_path: Path) -> None:
+    scripts = tmp_path / "scripts"
+    scripts.mkdir()
+    verify_fv3 = scripts / "verify_fv3_smoke.sh"
+    verify_generic = scripts / "verify.sh"
+    verify_fv3.write_text("#!/usr/bin/env bash\n")
+    verify_generic.write_text("#!/usr/bin/env bash\n")
+
+    found = detect_verify_script(tmp_path, "fv3")
+    assert found == verify_fv3
+
+
 def test_pick_mpas_suite_prefers_rrfs(tmp_path: Path) -> None:
     suites = tmp_path / "ccpp" / "suites"
     suites.mkdir(parents=True)

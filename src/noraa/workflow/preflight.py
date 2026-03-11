@@ -34,6 +34,7 @@ def verify_preflight_issues(
     deps_prefix: str | None,
     esmf_mkfile: str | None,
     using_verify_script: bool,
+    core: str,
     cmake_version_fn=cmake_version,
 ) -> list[tuple[str, str]]:
     issues: list[tuple[str, str]] = []
@@ -68,12 +69,12 @@ def verify_preflight_issues(
     if not deps_root.exists():
         issues.append(
             (
-                f"Issue identified: MPAS dependency bundle not found: {deps_root}",
+                f"Issue identified: UFS dependency bundle not found: {deps_root}",
                 repo_cmd(repo_root, "bootstrap", "deps"),
             )
         )
 
-    if shutil.which("pnetcdf-config") is None:
+    if core == "mpas" and shutil.which("pnetcdf-config") is None:
         issues.append(
             (
                 "Issue identified: pnetcdf-config not found (needed for noraa bootstrap deps on clean systems).",
@@ -105,12 +106,14 @@ def verify_preflight_failure(
     deps_prefix: str | None,
     esmf_mkfile: str | None,
     using_verify_script: bool,
+    core: str,
 ) -> tuple[str, str] | None:
     issues = verify_preflight_issues(
         repo_root,
         deps_prefix=deps_prefix,
         esmf_mkfile=esmf_mkfile,
         using_verify_script=using_verify_script,
+        core=core,
     )
     if not issues:
         return None

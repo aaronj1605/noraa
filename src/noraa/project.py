@@ -16,6 +16,7 @@ class ProjectConfig:
     upstream_url: str = "https://github.com/NOAA-EMC/ufsatm.git"
     allow_fork: bool = False
     fork_url: str = ""
+    core: str = "mpas"
     verify_script: str = "scripts/verify_mpas_smoke.sh"
 
 
@@ -49,6 +50,7 @@ def load_project(repo_root: Path) -> ProjectConfig | None:
         upstream_url=str(git.get("upstream_url", "https://github.com/NOAA-EMC/ufsatm.git")),
         allow_fork=bool(git.get("allow_fork", False)),
         fork_url=str(git.get("fork_url", "")),
+        core=str(build.get("core", "mpas")),
         verify_script=str(build.get("verify_script", "scripts/verify_mpas_smoke.sh")),
     )
 
@@ -57,17 +59,22 @@ def write_project(repo_root: Path, cfg: ProjectConfig) -> Path:
     p = project_file(repo_root)
     p.parent.mkdir(parents=True, exist_ok=True)
 
+    repo_path = cfg.repo_path.replace("\\", "/")
+    upstream_url = cfg.upstream_url.replace("\\", "/")
+    fork_url = cfg.fork_url.replace("\\", "/")
+    verify_script = cfg.verify_script.replace("\\", "/")
     text = (
         "[project]\n"
-        f'repo_path = "{cfg.repo_path}"\n'
+        f'repo_path = "{repo_path}"\n'
         "\n"
         "[git]\n"
-        f'upstream_url = "{cfg.upstream_url}"\n'
+        f'upstream_url = "{upstream_url}"\n'
         f"allow_fork = {'true' if cfg.allow_fork else 'false'}\n"
-        f'fork_url = "{cfg.fork_url}"\n'
+        f'fork_url = "{fork_url}"\n'
         "\n"
         "[build]\n"
-        f'verify_script = "{cfg.verify_script}"\n'
+        f'core = "{cfg.core}"\n'
+        f'verify_script = "{verify_script}"\n'
     )
     p.write_text(text)
     return p

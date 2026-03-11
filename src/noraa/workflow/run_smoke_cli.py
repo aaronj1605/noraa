@@ -12,6 +12,20 @@ def _compatibility_label(runtime_compatible: bool) -> str:
     return "runtime-ready" if runtime_compatible else "metadata-only"
 
 
+def _human_bytes(num_bytes: int | None) -> str:
+    if num_bytes is None:
+        return "size: n/a"
+    units = ["B", "KB", "MB", "GB", "TB", "PB"]
+    size = float(num_bytes)
+    idx = 0
+    while size >= 1024.0 and idx < len(units) - 1:
+        size /= 1024.0
+        idx += 1
+    if idx == 0:
+        return f"size: {int(size)} {units[idx]}"
+    return f"size: {size:.1f} {units[idx]}"
+
+
 def _print_fetch_result(
     repo_root: Path,
     source_repo: str,
@@ -178,24 +192,101 @@ def fetch_official_ufs(*, repo_root: Path, s3_prefix: str) -> None:
     )
 
 
-def fetch_official_regtests(*, repo_root: Path, s3_prefix: str, dry_run: bool) -> None:
+def fetch_official_regtests(
+    *,
+    repo_root: Path,
+    s3_prefix: str | None,
+    dry_run: bool,
+    yes: bool = False,
+    catalog_root: str = "input-data-20251015",
+    show_size: bool = False,
+    max_size_gb: float | None = 5.0,
+    prompt_int: Callable[[str], int] | None = None,
+) -> None:
     if shutil.which("aws") is None:
         fail(
             "NORAA identified: aws CLI is required for official-regtests dataset fetch.",
             next_step="python -m pip install -U awscli",
         )
 
+    resolved_prefix = (s3_prefix or "").strip().strip("/")
+    if not resolved_prefix:
+        try:
+            options = run_smoke.list_official_regtests_prefixes(
+                aws_bin="aws", catalog_root=catalog_root
+            )
+        except Exception as e:
+            fail(
+                f"Unable to list official-regtests prefixes: {e}",
+                next_step=f"{repo_cmd(repo_root, 'run-smoke', 'fetch-data', 'official-regtests')} --s3-prefix <prefix>",
+            )
+        if not options:
+            fail(
+                "No dataset prefixes were discovered in noaa-ufs-regtests-pds.",
+                next_step=f"{repo_cmd(repo_root, 'run-smoke', 'fetch-data', 'official-regtests')} --s3-prefix <prefix>",
+            )
+        if yes or len(options) == 1:
+            resolved_prefix = options[0]
+        else:
+            if prompt_int is None:
+                fail(
+                    "Interactive selection requires a prompt function.",
+                    next_step=f"{repo_cmd(repo_root, 'run-smoke', 'fetch-data', 'official-regtests')} --s3-prefix <prefix>",
+                )
+            print("Official regtests dataset prefix options:")
+            for i, opt in enumerate(options, start=1):
+                size_label = ""
+                if show_size:
+                    try:
+                        sz = run_smoke.regtests_prefix_size_bytes(
+                            s3_prefix=opt, aws_bin="aws"
+                        )
+                    except Exception:
+                        sz = None
+                    size_label = f"  [{_human_bytes(sz)}]"
+                print(f"{i}. {opt}{size_label}")
+            choice = prompt_int("Select official-regtests prefix number")
+            if choice < 1 or choice > len(options):
+                fail(
+                    f"Invalid dataset selection: {choice}",
+                    next_step=repo_cmd(repo_root, "run-smoke", "fetch-data", "official-regtests"),
+                )
+            resolved_prefix = options[choice - 1]
+
     if dry_run:
         print("Dry run: official-regtests fetch preview")
         print(f"Source repository: {run_smoke.REGTESTS_SOURCE_URL}")
-        print(f"Source path: {run_smoke.REGTESTS_BUCKET}/{s3_prefix.strip().strip('/')}/")
+        print(f"Source path: {run_smoke.REGTESTS_BUCKET}/{resolved_prefix}/")
         print("Run without --dry-run to fetch files.")
         return
+
+    size_bytes = None
+    try:
+        size_bytes = run_smoke.regtests_prefix_size_bytes(
+            s3_prefix=resolved_prefix, aws_bin="aws"
+        )
+    except Exception:
+        size_bytes = None
+    if size_bytes is not None:
+        print(f"Estimated download size: {_human_bytes(size_bytes)}")
+    if max_size_gb is not None and max_size_gb > 0 and size_bytes is not None:
+        limit_bytes = int(max_size_gb * 1024 * 1024 * 1024)
+        if size_bytes > limit_bytes:
+            fail(
+                (
+                    f"Selected prefix is larger than allowed limit "
+                    f"({_human_bytes(size_bytes)} > {max_size_gb:.1f} GB)."
+                ),
+                next_step=(
+                    f"{repo_cmd(repo_root, 'run-smoke', 'fetch-data', 'official-regtests')} "
+                    f"--s3-prefix {resolved_prefix} --max-size-gb {size_bytes / (1024 * 1024 * 1024):.1f}"
+                ),
+            )
 
     try:
         manifest = run_smoke.fetch_official_regtests_prefix(
             repo_root=repo_root,
-            s3_prefix=s3_prefix,
+            s3_prefix=resolved_prefix,
             aws_bin="aws",
         )
     except Exception as e:
@@ -207,12 +298,18 @@ def fetch_official_regtests(*, repo_root: Path, s3_prefix: str, dry_run: bool) -
     _print_fetch_result(
         repo_root,
         run_smoke.REGTESTS_SOURCE_URL,
-        f"{run_smoke.REGTESTS_BUCKET}/{s3_prefix.strip().strip('/')}/",
+        f"{run_smoke.REGTESTS_BUCKET}/{resolved_prefix}/",
         manifest,
     )
 
 
-def fetch_local(*, repo_root: Path, local_path: str, dataset: str) -> None:
+def fetch_local(
+    *,
+    repo_root: Path,
+    local_path: str,
+    dataset: str,
+    auto_fix_mpas_compat: bool = True,
+) -> None:
     p = Path(local_path).expanduser().resolve()
     if not p.exists():
         fail(
@@ -226,9 +323,17 @@ def fetch_local(*, repo_root: Path, local_path: str, dataset: str) -> None:
     )
     print(f"Validation detail: {detail}")
     manifest = run_smoke.fetch_local_dataset(
-        repo_root=repo_root, local_path=p, dataset_name=dataset
+        repo_root=repo_root,
+        local_path=p,
+        dataset_name=dataset,
+        auto_fix_mpas_compat=auto_fix_mpas_compat,
     )
     _print_fetch_result(repo_root, "user-local", str(p), manifest)
+    fixes = run_smoke.local_dataset_compat_fixes(repo_root)
+    if fixes:
+        print("Applied MPAS compatibility fixes:")
+        for fix in fixes:
+            print(f"- {fix}")
 
 
 def fetch_local_dry_run(*, local_path: str) -> None:
@@ -265,7 +370,13 @@ def clean_data(*, repo_root: Path, dataset: str | None) -> None:
     print(f"Removed smoke data root: {data_root}")
 
 
-def execute(*, repo_root: Path, timeout_sec: int, command: str | None) -> None:
+def execute(
+    *,
+    repo_root: Path,
+    timeout_sec: int,
+    command: str | None,
+    require_output: bool,
+) -> None:
     checks = run_smoke.collect_status_checks(repo_root)
     _, ready = run_smoke.format_status_report(checks)
     if not ready:
@@ -278,13 +389,20 @@ def execute(*, repo_root: Path, timeout_sec: int, command: str | None) -> None:
         )
 
     result = run_smoke.execute_smoke(
-        repo_root=repo_root, timeout_sec=timeout_sec, command_text=command
+        repo_root=repo_root,
+        timeout_sec=timeout_sec,
+        command_text=command,
+        require_artifacts=require_output,
     )
     print("NORAA run-smoke execution summary:")
     print(f"Run directory: {result.run_dir}")
     print(f"Command: {' '.join(result.command)}")
     print(f"Result: {run_smoke.execution_label(result)}")
     print(f"Details: {result.reason}")
+    if result.artifacts:
+        print(f"Artifacts: {', '.join(result.artifacts)}")
+    elif require_output:
+        print("Artifacts: none")
     print(f"Logs: {result.run_dir}")
     if result.ok:
         print(f"Run this command next: {repo_cmd(repo_root, 'run-smoke', 'status')}")
