@@ -1,4 +1,6 @@
 .venv/
+.venv_readme_sys/
+.venv_readme_test/
 __pycache__/
 *.pyc
 .noraa/

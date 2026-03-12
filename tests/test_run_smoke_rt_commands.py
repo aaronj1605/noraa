@@ -2,6 +2,10 @@ from __future__ import annotations
 
 from pathlib import Path
 
+import typer
+from typer.testing import CliRunner
+
+from noraa.project import ProjectConfig, load_project
 from noraa.workflow.run_smoke_rt_commands import (
     _dataset_bundle_dir,
     _is_back_token,
@@ -95,3 +99,86 @@ def test_looks_like_menu_token() -> None:
     assert _looks_like_menu_token("1")
     assert _looks_like_menu_token("2")
     assert not _looks_like_menu_token("/tmp/case")
+
+
+def test_rt_advanced_guide_updates_project_core_before_status(monkeypatch, tmp_path: Path) -> None:
+    repo_root = tmp_path / "repo"
+    repo_root.mkdir()
+
+    app = typer.Typer()
+    run_smoke_app = typer.Typer()
+    run_smoke_fetch_app = typer.Typer()
+    rt_app = typer.Typer()
+    app.add_typer(run_smoke_app, name="run-smoke")
+    run_smoke_app.add_typer(run_smoke_fetch_app, name="fetch-data")
+    app.add_typer(rt_app, name="rt")
+
+    cfg = ProjectConfig(
+        repo_path=str(repo_root),
+        core="fv3",
+        verify_script="scripts/verify_fv3_smoke.sh",
+    )
+
+    def require_project(path: Path) -> ProjectConfig:
+        assert path == repo_root
+        return cfg
+
+    def fetch_official_regtests(**kwargs) -> None:
+        data_root = repo_root / ".noraa" / "runs" / "smoke" / "data"
+        bundle = data_root / "sample_case"
+        bundle.mkdir(parents=True, exist_ok=True)
+        (data_root / "dataset.toml").write_text(
+            "[dataset]\n"
+            'name = "sample_case"\n'
+            'bundle_dir = "sample_case"\n',
+            encoding="utf-8",
+        )
+
+    monkeypatch.setattr(
+        "noraa.workflow.run_smoke_rt_commands.run_smoke_cli.fetch_official_regtests",
+        fetch_official_regtests,
+    )
+    monkeypatch.setattr(
+        "noraa.workflow.run_smoke_rt_commands.run_smoke_cli.status",
+        lambda repo_root: None,
+    )
+    monkeypatch.setattr(
+        "noraa.workflow.run_smoke_rt_commands.run_smoke_cli.execute",
+        lambda **kwargs: None,
+    )
+    monkeypatch.setattr(
+        "noraa.workflow.run_smoke_rt_commands.run_smoke.collect_status_checks",
+        lambda repo_root: [],
+    )
+    monkeypatch.setattr(
+        "noraa.workflow.run_smoke_rt_commands.run_smoke.format_status_report",
+        lambda checks: ("READY", True),
+    )
+    monkeypatch.setattr(
+        "noraa.workflow.run_smoke_rt_commands.run_smoke.validate_runtime_case_dir",
+        lambda case_dir: (True, str(case_dir)),
+    )
+
+    from noraa.workflow.run_smoke_rt_commands import register_run_smoke_and_rt_commands
+
+    register_run_smoke_and_rt_commands(
+        run_smoke_app=run_smoke_app,
+        run_smoke_fetch_app=run_smoke_fetch_app,
+        rt_app=rt_app,
+        target_repo=lambda repo: Path(repo),
+        require_project=require_project,
+        normalize_core=lambda core: core,
+        verify_runner=lambda repo_root, core: None,
+    )
+
+    result = CliRunner().invoke(
+        app,
+        ["rt", "advanced-guide", "--repo", str(repo_root), "--core", "mpas", "--yes"],
+    )
+
+    assert result.exit_code == 0, result.stdout
+    saved = load_project(repo_root)
+    assert saved is not None
+    assert saved.core == "mpas"
+    assert saved.verify_script == "scripts/verify_mpas_smoke.sh"
+    assert "Updated project core default to: mpas" in result.stdout

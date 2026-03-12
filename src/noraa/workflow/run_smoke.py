@@ -27,6 +27,8 @@ HTF_REGISTRY_URL = "https://registry.opendata.aws/noaa-ufs-htf-pds"
 HTF_BUCKET = "s3://noaa-ufs-htf-pds"
 REGTESTS_SOURCE_URL = "https://noaa-ufs-regtests-pds.s3.amazonaws.com"
 REGTESTS_BUCKET = "s3://noaa-ufs-regtests-pds"
+MAX_ARCHIVE_MEMBERS = 10000
+MAX_ARCHIVE_TOTAL_BYTES = 10 * 1024 * 1024 * 1024
 
 
 @dataclass(frozen=True)
@@ -94,7 +96,8 @@ def current_utc_date() -> str:
 def _git_origin(path: Path) -> str:
     try:
         return safe_check_output(
-            ["git", "-C", str(path), "config", "--get", "remote.origin.url"]
+            ["git", "-C", str(path), "config", "--get", "remote.origin.url"],
+            raise_on_error=True,
         ).strip()
     except Exception:
         return ""
@@ -142,6 +145,15 @@ def _safe_extract_tar_gz(archive_path: Path, dest_dir: Path) -> None:
         members = tf.getmembers()
         total_members = len(members)
         total_bytes = sum(m.size for m in members if m.isreg())
+        if total_members > MAX_ARCHIVE_MEMBERS:
+            raise ValueError(
+                f"Archive has too many members ({total_members} > {MAX_ARCHIVE_MEMBERS})"
+            )
+        if total_bytes > MAX_ARCHIVE_TOTAL_BYTES:
+            raise ValueError(
+                "Archive payload is too large "
+                f"({total_bytes} bytes > {MAX_ARCHIVE_TOTAL_BYTES} bytes)"
+            )
         for member in members:
             name = member.name
             if name.startswith("/") or name.startswith("\\"):
@@ -229,36 +241,44 @@ def _looks_like_ic_file(nc: Path) -> bool:
 def discover_dataset_candidates(repo_root: Path) -> list[DatasetCandidate]:
     candidates: list[DatasetCandidate] = []
     include_dirs = ("data", "test", "tests", "example", "examples", "input", "inputs")
+    skip_dirs = {".git", ".noraa", ".venv", "__pycache__", "build", "install"}
 
     for root, origin in _search_roots(repo_root):
         if not root.exists():
             continue
-        for nc in root.rglob("*.nc"):
-            low = str(nc).replace("\\", "/").lower()
-            # Ignore NORAA-managed artifacts and embedded ESMF source trees.
-            if "/.noraa/" in low or "/esmf/src/" in low:
+        for dirpath, dirnames, filenames in os.walk(root, topdown=True):
+            current = Path(dirpath)
+            low_dir = str(current).replace("\\", "/").lower()
+            if "/.noraa/" in low_dir or "/esmf/src/" in low_dir:
+                dirnames[:] = []
                 continue
-            if not any(f"/{d}/" in low for d in include_dirs):
+            dirnames[:] = [d for d in dirnames if d not in skip_dirs]
+            parts_lower = {part.lower() for part in current.parts}
+            if not parts_lower.intersection(include_dirs):
                 continue
-            if not _looks_like_ic_file(nc):
-                continue
+            for filename in filenames:
+                if not filename.lower().endswith(".nc"):
+                    continue
+                nc = current / filename
+                if not _looks_like_ic_file(nc):
+                    continue
 
-            lbc_file = None
-            for sib in nc.parent.glob("*.nc"):
-                s = sib.name.lower()
-                if sib != nc and ("lbc" in s or "bound" in s):
-                    lbc_file = sib
-                    break
+                lbc_file = None
+                for sib in nc.parent.glob("*.nc"):
+                    s = sib.name.lower()
+                    if sib != nc and ("lbc" in s or "bound" in s):
+                        lbc_file = sib
+                        break
 
-            candidates.append(
-                DatasetCandidate(
-                    name=_candidate_name(nc),
-                    ic_file=nc,
-                    lbc_file=lbc_file,
-                    source_repo_path=root,
-                    source_repo_url=origin,
+                candidates.append(
+                    DatasetCandidate(
+                        name=_candidate_name(nc),
+                        ic_file=nc,
+                        lbc_file=lbc_file,
+                        source_repo_path=root,
+                        source_repo_url=origin,
+                    )
                 )
-            )
 
     # Stable deterministic order
     return sorted(candidates, key=lambda c: (str(c.source_repo_path), str(c.ic_file)))

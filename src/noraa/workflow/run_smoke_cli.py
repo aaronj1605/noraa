@@ -26,6 +26,25 @@ def _human_bytes(num_bytes: int | None) -> str:
     return f"size: {size:.1f} {units[idx]}"
 
 
+def _filter_regtests_prefixes_for_core(options: list[str], core: str) -> list[str]:
+    core_norm = (core or "mpas").strip().lower()
+    if core_norm not in {"mpas", "fv3"}:
+        return options
+
+    def _basename(prefix: str) -> str:
+        return prefix.strip().strip("/").split("/")[-1].upper()
+
+    if core_norm == "fv3":
+        filtered = [
+            opt for opt in options if (_basename(opt) == "FV3" or "FV3" in _basename(opt))
+        ]
+    else:
+        filtered = [
+            opt for opt in options if (_basename(opt) == "MPAS" or "MPAS" in _basename(opt))
+        ]
+    return filtered or options
+
+
 def _print_fetch_result(
     repo_root: Path,
     source_repo: str,
@@ -211,6 +230,7 @@ def fetch_official_regtests(
 
     resolved_prefix = (s3_prefix or "").strip().strip("/")
     if not resolved_prefix:
+        workflow_core = run_smoke._selected_core(repo_root)
         try:
             options = run_smoke.list_official_regtests_prefixes(
                 aws_bin="aws", catalog_root=catalog_root
@@ -225,6 +245,13 @@ def fetch_official_regtests(
                 "No dataset prefixes were discovered in noaa-ufs-regtests-pds.",
                 next_step=f"{repo_cmd(repo_root, 'run-smoke', 'fetch-data', 'official-regtests')} --s3-prefix <prefix>",
             )
+        filtered_options = _filter_regtests_prefixes_for_core(options, workflow_core)
+        if filtered_options != options:
+            print(
+                f"Filtered official-regtests options for core={workflow_core}: "
+                f"{len(filtered_options)} of {len(options)} prefixes shown."
+            )
+        options = filtered_options
         if yes or len(options) == 1:
             resolved_prefix = options[0]
         else:

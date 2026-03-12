@@ -3,6 +3,8 @@
 NORAA is a CLI helper for building UFS ATM with MPAS or FV3 using clean upstream repos.
 It keeps build artifacts and logs under `.noraa/` in the target `ufsatm` repo for reproducible runs.
 
+Work in progress: the current local branch has active workflow and runtime-path development in progress, especially around guided runtime data selection and execute-ready smoke-run cases.
+
 ## Tested Baseline
 
 - Linux: Ubuntu 22.04 / 24.04
@@ -108,6 +110,10 @@ NORAA writes outputs under target repo `.noraa/`:
 - `.noraa/esmf/` bootstrapped ESMF
 - `.noraa/deps/` bootstrapped dependencies
 - `.noraa/build/` verify build directory
+
+## Current Limitation
+
+- For `core=mpas`, `noraa run-smoke fetch-data official-regtests` currently filters to the MPAS regtests prefix and can fetch useful input data, but that bundle is not yet execute-ready for NORAA's current `ufsatm` MPAS smoke path. In current testing it does not include `namelist.atmosphere`, so `run-smoke validate-data` remains `NOT READY` and `run-smoke execute` correctly refuses to run. Use `run-smoke fetch-data local --local-path <ufs-runtime-case>` for an execute-ready MPAS runtime case.
 
 
 ## License and Attribution

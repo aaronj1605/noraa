@@ -94,6 +94,35 @@ def _resolve_selected_core(
     return selected_core
 
 
+def _sync_project_core_selection(
+    *,
+    repo_root: Path,
+    cfg: ProjectConfig,
+    selected_core: str,
+    yes: bool,
+) -> None:
+    if selected_core == cfg.core:
+        return
+    update_core = yes or typer.confirm(
+        f"Update project default core from {cfg.core} to {selected_core}?",
+        default=True,
+    )
+    if update_core:
+        cfg.core = selected_core
+        cfg.verify_script = (
+            "scripts/verify_fv3_smoke.sh"
+            if selected_core == "fv3"
+            else "scripts/verify_mpas_smoke.sh"
+        )
+        write_project(repo_root, cfg)
+        print(f"Updated project core default to: {selected_core}")
+        return
+    print(
+        "Continuing without updating project core. "
+        "Note: run-smoke status/execute behavior follows project core."
+    )
+
+
 def _validate_case_dir_for_core(*, core: str, case_dir: Path) -> tuple[bool, str]:
     if core == "fv3":
         return run_smoke.validate_fv3_runtime_case_dir(case_dir)
@@ -112,9 +141,9 @@ def register_run_smoke_and_rt_commands(
 ) -> None:
     @rt_app.command("validate-case")
     def rt_validate_case(
-        repo: str = typer.Option(".", "--repo"),
-        core: str = typer.Option("mpas", "--core", help="Core to validate (mpas or fv3)."),
-        case_dir: str = typer.Option(..., "--case-dir", help="Runtime case directory to validate."),
+        repo: str = typer.Option(".", "--repo", metavar="REPO_PATH"),
+        core: str = typer.Option("mpas", "--core", metavar="CORE", help="Core to validate (mpas or fv3)."),
+        case_dir: str = typer.Option(..., "--case-dir", metavar="CASE_DIR", help="Runtime case directory to validate."),
     ):
         """Validate a local runtime case directory for MPAS or FV3 before execute."""
         repo_root = target_repo(repo)
@@ -140,15 +169,17 @@ def register_run_smoke_and_rt_commands(
 
     @rt_app.command("advanced-guide")
     def rt_advanced_guide(
-        repo: str = typer.Option(".", "--repo"),
+        repo: str = typer.Option(".", "--repo", metavar="REPO_PATH"),
         core: str | None = typer.Option(
             None,
             "--core",
+            metavar="CORE",
             help="Core to guide (mpas or fv3). If omitted, NORAA will ask.",
         ),
         platform: str = typer.Option(
             "linux",
             "--platform",
+            metavar="PLATFORM",
             help="Target platform for command hints (linux, jet, hera).",
         ),
         yes: bool = typer.Option(False, "--yes", help="Auto-accept recommended guided steps."),
@@ -164,6 +195,12 @@ def register_run_smoke_and_rt_commands(
             core=core,
             yes=yes,
             normalize_core=normalize_core,
+        )
+        _sync_project_core_selection(
+            repo_root=repo_root,
+            cfg=cfg,
+            selected_core=selected_core,
+            yes=yes,
         )
         plat = platform.strip().lower()
         if plat not in {"linux", "jet", "hera"}:
@@ -379,7 +416,7 @@ def register_run_smoke_and_rt_commands(
 
     @run_smoke_app.command("status")
     def run_smoke_status(
-        repo: str = typer.Option(".", "--repo"),
+        repo: str = typer.Option(".", "--repo", metavar="REPO_PATH"),
         short: bool = typer.Option(False, "--short", help="Print one-line readiness summary."),
     ):
         """Report readiness for optional run-smoke workflows with RED/GREEN checks."""
@@ -390,17 +427,18 @@ def register_run_smoke_and_rt_commands(
             run_smoke_cli.status(repo_root)
 
     @run_smoke_app.command("validate-data")
-    def run_smoke_validate_data(repo: str = typer.Option(".", "--repo")):
+    def run_smoke_validate_data(repo: str = typer.Option(".", "--repo", metavar="REPO_PATH")):
         """Validate runtime dataset compatibility and list the first blocking issue/action."""
         repo_root = target_repo(repo)
         run_smoke_cli.validate_data(repo_root)
 
     @run_smoke_fetch_app.command("scan")
     def run_smoke_fetch_data_scan(
-        repo: str = typer.Option(".", "--repo"),
+        repo: str = typer.Option(".", "--repo", metavar="REPO_PATH"),
         dataset: str = typer.Option(
             None,
             "--dataset",
+            metavar="DATASET_NAME",
             help="Dataset name from discovered repo candidates.",
         ),
         yes: bool = typer.Option(False, "--yes", help="Auto-select first candidate."),
@@ -417,10 +455,11 @@ def register_run_smoke_and_rt_commands(
 
     @run_smoke_fetch_app.command("official")
     def run_smoke_fetch_data_official(
-        repo: str = typer.Option(".", "--repo"),
+        repo: str = typer.Option(".", "--repo", metavar="REPO_PATH"),
         dataset: str = typer.Option(
             None,
             "--dataset",
+            metavar="DATASET_NAME",
             help="Official curated dataset id.",
         ),
         yes: bool = typer.Option(False, "--yes", help="Auto-select first candidate."),
@@ -437,10 +476,11 @@ def register_run_smoke_and_rt_commands(
 
     @run_smoke_fetch_app.command("official-ufs")
     def run_smoke_fetch_data_official_ufs(
-        repo: str = typer.Option(".", "--repo"),
+        repo: str = typer.Option(".", "--repo", metavar="REPO_PATH"),
         s3_prefix: str = typer.Option(
             ...,
             "--s3-prefix",
+            metavar="S3_PREFIX",
             help="HTF S3 prefix under noaa-ufs-htf-pds (example: develop-20250530/<case-path>).",
         ),
     ):
@@ -451,15 +491,17 @@ def register_run_smoke_and_rt_commands(
 
     @run_smoke_fetch_app.command("official-regtests")
     def run_smoke_fetch_data_official_regtests(
-        repo: str = typer.Option(".", "--repo"),
+        repo: str = typer.Option(".", "--repo", metavar="REPO_PATH"),
         s3_prefix: str = typer.Option(
             None,
             "--s3-prefix",
+            metavar="S3_PREFIX",
             help="Optional S3 prefix under noaa-ufs-regtests-pds (example: input-data-20251015/MPAS). If omitted, NORAA will list catalog options.",
         ),
         catalog_root: str = typer.Option(
             "input-data-20251015",
             "--catalog-root",
+            metavar="CATALOG_ROOT",
             help="Catalog root prefix to query when --s3-prefix is omitted.",
         ),
         show_size: bool = typer.Option(
@@ -493,15 +535,17 @@ def register_run_smoke_and_rt_commands(
 
     @run_smoke_fetch_app.command("local")
     def run_smoke_fetch_data_local(
-        repo: str = typer.Option(".", "--repo"),
+        repo: str = typer.Option(".", "--repo", metavar="REPO_PATH"),
         local_path: str = typer.Option(
             ...,
             "--local-path",
+            metavar="LOCAL_PATH",
             help="Directory or file path containing user dataset files.",
         ),
         dataset: str = typer.Option(
             "local_user_data",
             "--dataset",
+            metavar="DATASET_NAME",
             help="Dataset name to store under .noraa/runs/smoke/data.",
         ),
         auto_fix_mpas_compat: bool = typer.Option(
@@ -526,8 +570,8 @@ def register_run_smoke_and_rt_commands(
 
     @run_smoke_fetch_app.command("clean-data")
     def run_smoke_fetch_data_clean(
-        repo: str = typer.Option(".", "--repo"),
-        dataset: str = typer.Option(None, "--dataset", help="Optional dataset directory name to remove."),
+        repo: str = typer.Option(".", "--repo", metavar="REPO_PATH"),
+        dataset: str = typer.Option(None, "--dataset", metavar="DATASET_NAME", help="Optional dataset directory name to remove."),
     ):
         """Remove one dataset directory or all smoke data under .noraa/runs/smoke/data."""
         repo_root = target_repo(repo)
@@ -536,11 +580,12 @@ def register_run_smoke_and_rt_commands(
 
     @run_smoke_app.command("execute")
     def run_smoke_execute(
-        repo: str = typer.Option(".", "--repo"),
+        repo: str = typer.Option(".", "--repo", metavar="REPO_PATH"),
         timeout_sec: int = typer.Option(20, "--timeout-sec"),
         command: str = typer.Option(
             None,
             "--command",
+            metavar="COMMAND",
             help="Optional override command to run in the smoke execution directory.",
         ),
         require_output: bool = typer.Option(
@@ -561,10 +606,11 @@ def register_run_smoke_and_rt_commands(
 
     @rt_app.command("guide")
     def rt_guide(
-        repo: str = typer.Option(".", "--repo"),
+        repo: str = typer.Option(".", "--repo", metavar="REPO_PATH"),
         core: str | None = typer.Option(
             None,
             "--core",
+            metavar="CORE",
             help="Core to guide (mpas or fv3). If omitted, NORAA will ask.",
         ),
         yes: bool = typer.Option(False, "--yes", help="Auto-accept recommended guided steps."),
@@ -583,26 +629,12 @@ def register_run_smoke_and_rt_commands(
             yes=yes,
             normalize_core=normalize_core,
         )
-
-        if selected_core != cfg.core:
-            update_core = yes or typer.confirm(
-                f"Update project default core from {cfg.core} to {selected_core}?",
-                default=True,
-            )
-            if update_core:
-                cfg.core = selected_core
-                cfg.verify_script = (
-                    "scripts/verify_fv3_smoke.sh"
-                    if selected_core == "fv3"
-                    else "scripts/verify_mpas_smoke.sh"
-                )
-                write_project(repo_root, cfg)
-                print(f"Updated project core default to: {selected_core}")
-            else:
-                print(
-                    "Continuing without updating project core. "
-                    "Note: run-smoke status/execute behavior follows project core."
-                )
+        _sync_project_core_selection(
+            repo_root=repo_root,
+            cfg=cfg,
+            selected_core=selected_core,
+            yes=yes,
+        )
 
         print("NORAA RT Guide")
         print(f"Repository: {repo_root}")

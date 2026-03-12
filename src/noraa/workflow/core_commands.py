@@ -173,15 +173,18 @@ def register_core_commands(
 
     @app.command()
     def init(
-        repo: str = typer.Option(".", "--repo"),
+        repo: str = typer.Option(".", "--repo", metavar="REPO_PATH"),
         force: bool = typer.Option(False, "--force"),
         core: str = typer.Option(
             "mpas",
             "--core",
+            metavar="CORE",
             help="Atmospheric dynamical core workflow to configure (mpas or fv3).",
         ),
         upstream_url: str = typer.Option(
-            "https://github.com/NOAA-EMC/ufsatm.git", "--upstream-url"
+            "https://github.com/NOAA-EMC/ufsatm.git",
+            "--upstream-url",
+            metavar="UPSTREAM_URL",
         ),
     ):
         """Initialize NORAA for a target ufsatm checkout."""
@@ -216,7 +219,7 @@ def register_core_commands(
         print("Initialized NORAA project.")
 
     @app.command()
-    def doctor(repo: str = typer.Option(".", "--repo")):
+    def doctor(repo: str = typer.Option(".", "--repo", metavar="REPO_PATH")):
         """Capture environment and tool snapshots for the target repo."""
         repo_root = target_repo(repo)
         require_project(repo_root)
@@ -231,14 +234,15 @@ def register_core_commands(
 
     @app.command()
     def verify(
-        repo: str = typer.Option(".", "--repo"),
+        repo: str = typer.Option(".", "--repo", metavar="REPO_PATH"),
         core: str | None = typer.Option(
             None,
             "--core",
+            metavar="CORE",
             help="Core to verify (mpas or fv3). Defaults to project config.",
         ),
-        deps_prefix: str = typer.Option(None, "--deps-prefix"),
-        esmf_mkfile: str = typer.Option(None, "--esmf-mkfile"),
+        deps_prefix: str = typer.Option(None, "--deps-prefix", metavar="DEPS_PREFIX"),
+        esmf_mkfile: str = typer.Option(None, "--esmf-mkfile", metavar="ESMF_MKFILE"),
         clean: bool = typer.Option(True, "--clean/--no-clean"),
         preflight_only: bool = typer.Option(False, "--preflight-only"),
         fv3_fms_r8_fallback: bool = typer.Option(
@@ -268,11 +272,12 @@ def register_core_commands(
 
     @app.command()
     def bootstrap(
-        repo: str = typer.Option(".", "--repo"),
+        repo: str = typer.Option(".", "--repo", metavar="REPO_PATH"),
         component: str = typer.Argument(...),
         esmf_branch: str = typer.Option(
             "v8.6.1",
             "--esmf-branch",
+            metavar="ESMF_BRANCH",
             help="ESMF git branch or tag to use when bootstrapping.",
         ),
     ):
@@ -303,10 +308,11 @@ def register_core_commands(
 
     @app.command("build")
     def build(
-        repo: str = typer.Option(".", "--repo"),
+        repo: str = typer.Option(".", "--repo", metavar="REPO_PATH"),
         core: str | None = typer.Option(
             None,
             "--core",
+            metavar="CORE",
             help="Core to build (mpas or fv3). Defaults to project config.",
         ),
         clean: bool = typer.Option(True, "--clean/--no-clean"),
@@ -316,6 +322,7 @@ def register_core_commands(
         esmf_branch: str = typer.Option(
             "v8.6.1",
             "--esmf-branch",
+            metavar="ESMF_BRANCH",
             help="ESMF git branch or tag to use if ESMF bootstrap is required.",
         ),
     ):
@@ -352,7 +359,7 @@ def register_core_commands(
 
     @app.command("build-mpas")
     def build_mpas(
-        repo: str = typer.Option(".", "--repo"),
+        repo: str = typer.Option(".", "--repo", metavar="REPO_PATH"),
         clean: bool = typer.Option(True, "--clean/--no-clean"),
         yes: bool = typer.Option(
             False, "--yes", help="Auto-accept guided prompts and run all steps."
@@ -360,6 +367,7 @@ def register_core_commands(
         esmf_branch: str = typer.Option(
             "v8.6.1",
             "--esmf-branch",
+            metavar="ESMF_BRANCH",
             help="ESMF git branch or tag to use if ESMF bootstrap is required.",
         ),
     ):

@@ -90,6 +90,34 @@ def test_safe_extract_tar_gz_blocks_path_traversal(tmp_path: Path) -> None:
         run_smoke._safe_extract_tar_gz(archive, dest)
 
 
+def test_safe_extract_tar_gz_blocks_too_many_members(tmp_path: Path, monkeypatch) -> None:
+    archive = tmp_path / "many.tar.gz"
+    payload = tmp_path / "payload.txt"
+    payload.write_text("x\n", encoding="utf-8")
+    with tarfile.open(archive, "w:gz") as tf:
+        tf.add(payload, arcname="payload.txt")
+
+    dest = tmp_path / "out"
+    dest.mkdir()
+    monkeypatch.setattr(run_smoke, "MAX_ARCHIVE_MEMBERS", 0)
+    with pytest.raises(ValueError):
+        run_smoke._safe_extract_tar_gz(archive, dest)
+
+
+def test_safe_extract_tar_gz_blocks_too_large_payload(tmp_path: Path, monkeypatch) -> None:
+    archive = tmp_path / "large.tar.gz"
+    payload = tmp_path / "payload.txt"
+    payload.write_text("too-big\n", encoding="utf-8")
+    with tarfile.open(archive, "w:gz") as tf:
+        tf.add(payload, arcname="payload.txt")
+
+    dest = tmp_path / "out"
+    dest.mkdir()
+    monkeypatch.setattr(run_smoke, "MAX_ARCHIVE_TOTAL_BYTES", 1)
+    with pytest.raises(ValueError):
+        run_smoke._safe_extract_tar_gz(archive, dest)
+
+
 def test_fetch_official_bundle_writes_archive_sha256(tmp_path: Path, monkeypatch) -> None:
     source_tar = tmp_path / "source.tar.gz"
     payload = tmp_path / "payload.txt"
@@ -140,3 +168,11 @@ def test_fetch_official_bundle_rejects_hash_mismatch(tmp_path: Path, monkeypatch
 
     with pytest.raises(ValueError):
         run_smoke.fetch_official_bundle(repo_root=tmp_path, dataset=dataset)
+
+
+def test_git_origin_returns_empty_on_git_failure(tmp_path: Path, monkeypatch) -> None:
+    def _raise(*_args, **_kwargs):
+        raise RuntimeError("git failed")
+
+    monkeypatch.setattr(run_smoke, "safe_check_output", _raise)
+    assert run_smoke._git_origin(tmp_path) == ""

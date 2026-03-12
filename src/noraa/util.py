@@ -96,7 +96,13 @@ def run_streamed(cmd: list[str], cwd: Path, out_dir: Path, env: dict[str, str]) 
         return p.wait()
 
 
-def safe_check_output(cmd: list[str], cwd: Path | None = None, env: dict[str, str] | None = None) -> str:
+def safe_check_output(
+    cmd: list[str],
+    cwd: Path | None = None,
+    env: dict[str, str] | None = None,
+    *,
+    raise_on_error: bool = False,
+) -> str:
     try:
         return subprocess.check_output(
             cmd,
@@ -106,4 +112,6 @@ def safe_check_output(cmd: list[str], cwd: Path | None = None, env: dict[str, st
             stderr=subprocess.STDOUT,
         )
     except Exception as e:
+        if raise_on_error:
+            raise
         return f"[command failed] {' '.join(cmd)}\n{e}\n"

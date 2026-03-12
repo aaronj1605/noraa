@@ -90,6 +90,26 @@ def _ensure_pytest_available() -> None:
         )
 
 
+def _noraa_source_root() -> Path | None:
+    here = Path(__file__).resolve()
+    for parent in here.parents:
+        if (parent / "pyproject.toml").exists() and (parent / "src" / "noraa").exists():
+            return parent
+    return None
+
+
+def _self_test_repo_root(repo: str | None) -> Path:
+    if repo:
+        return _target_repo(repo)
+    repo_root = _noraa_source_root()
+    if repo_root is None:
+        fail(
+            "NORAA self-test requires a source checkout with tests.",
+            next_step="Reinstall from a local NORAA checkout with `pip install -e .` or pass --repo /path/to/noraa",
+        )
+    return repo_root
+
+
 def _require_project(repo_root: Path) -> ProjectConfig:
     cfg = load_project(repo_root)
     if cfg is None:
@@ -266,10 +286,11 @@ def _format_preflight_summary(issues: list[tuple[str, str]]) -> str:
 
 @app.command()
 def diagnose(
-    repo: str = typer.Option(".", "--repo"),
+    repo: str = typer.Option(".", "--repo", metavar="REPO_PATH"),
     log_dir_override: str = typer.Option(
         None,
         "--log-dir",
+        metavar="LOG_DIR",
         help="Explicit log directory to diagnose (defaults to latest verify run).",
     ),
 ):
@@ -313,15 +334,21 @@ def diagnose(
 
 @app.command("self-test")
 def self_test(
-    repo: str = typer.Option(".", "--repo"),
+    repo: str | None = typer.Option(
+        None,
+        "--repo",
+        metavar="REPO_PATH",
+        help="Optional NORAA source checkout to test. Defaults to the installed NORAA checkout.",
+    ),
     pytest_args: str = typer.Option(
         "-q",
         "--pytest-args",
+        metavar="PYTEST_ARGS",
         help="Arguments forwarded to pytest (quoted string).",
     ),
 ):
-    """Run local NORAA tests for the current checkout with dependency checks."""
-    repo_root = _target_repo(repo)
+    """Run local NORAA tests for the installed or explicitly provided checkout."""
+    repo_root = _self_test_repo_root(repo)
     _ensure_pytest_available()
     args = shlex.split(pytest_args, posix=(os.name != "nt"))
     cmd = [sys.executable, "-m", "pytest", *args]

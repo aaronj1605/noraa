@@ -152,6 +152,18 @@ def test_discover_dataset_candidates_and_fetch(tmp_path: Path, monkeypatch) -> N
     assert smoke_check.ok is True
 
 
+def test_discover_dataset_candidates_finds_nested_test_data(tmp_path: Path, monkeypatch) -> None:
+    monkeypatch.setattr(run_smoke, "_git_origin", lambda _p: "https://github.com/NOAA-EMC/ufsatm.git")
+
+    ic = tmp_path / "ccpp" / "physics" / "foo" / "tests" / "data" / "nested_init.nc"
+    ic.parent.mkdir(parents=True)
+    ic.write_text("ic\n")
+
+    candidates = run_smoke.discover_dataset_candidates(tmp_path)
+    paths = [str(c.ic_file) for c in candidates]
+    assert str(ic) in paths
+
+
 def test_discovery_excludes_noraa_esmf_noise(tmp_path: Path, monkeypatch) -> None:
     monkeypatch.setattr(run_smoke, "_git_origin", lambda _p: "https://github.com/NOAA-EMC/ufsatm.git")
 
@@ -397,8 +409,9 @@ def test_fetch_official_regtests_auto_selects_catalog_prefix(tmp_path: Path, mon
     )
 
     output = capsys.readouterr().out
-    assert captured["prefix"] == "input-data-20251015/FV3_regional_input_data"
-    assert "Source path: s3://noaa-ufs-regtests-pds/input-data-20251015/FV3_regional_input_data/" in output
+    assert captured["prefix"] == "input-data-20251015/MPAS"
+    assert "Filtered official-regtests options for core=mpas" in output
+    assert "Source path: s3://noaa-ufs-regtests-pds/input-data-20251015/MPAS/" in output
 
 
 def test_fetch_official_regtests_interactive_lists_size(tmp_path: Path, monkeypatch, capsys) -> None:
@@ -428,12 +441,50 @@ def test_fetch_official_regtests_interactive_lists_size(tmp_path: Path, monkeypa
         dry_run=False,
         yes=False,
         show_size=True,
-        prompt_int=lambda _msg: 2,
+        prompt_int=lambda _msg: 1,
     )
 
     output = capsys.readouterr().out
-    assert "size: 3.0 MB" in output
     assert "size: 1.0 KB" in output
+    assert "FV3_regional_input_data" not in output
+
+
+def test_fetch_official_regtests_auto_selects_catalog_prefix_for_fv3(tmp_path: Path, monkeypatch, capsys) -> None:
+    monkeypatch.setattr(run_smoke_cli.shutil, "which", lambda _x: "aws")
+    (tmp_path / ".noraa" / "project.toml").parent.mkdir(parents=True)
+    (tmp_path / ".noraa" / "project.toml").write_text(
+        "[project]\nrepo_path = \"/tmp/x\"\n\n"
+        "[git]\nupstream_url = \"https://github.com/NOAA-EMC/ufsatm.git\"\nallow_fork = false\nfork_url = \"\"\n\n"
+        "[build]\ncore = \"fv3\"\nverify_script = \"scripts/verify_fv3_smoke.sh\"\n",
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(
+        run_smoke,
+        "list_official_regtests_prefixes",
+        lambda **_kwargs: [
+            "input-data-20251015/FV3_regional_input_data",
+            "input-data-20251015/MPAS",
+        ],
+    )
+    captured: dict[str, str] = {}
+
+    def _fake_fetch(**kwargs):
+        captured["prefix"] = kwargs["s3_prefix"]
+        return tmp_path / ".noraa" / "runs" / "smoke" / "data" / "dataset.toml"
+
+    monkeypatch.setattr(run_smoke, "fetch_official_regtests_prefix", _fake_fetch)
+
+    run_smoke_cli.fetch_official_regtests(
+        repo_root=tmp_path,
+        s3_prefix=None,
+        dry_run=False,
+        yes=True,
+        catalog_root="input-data-20251015",
+    )
+
+    output = capsys.readouterr().out
+    assert captured["prefix"] == "input-data-20251015/FV3_regional_input_data"
+    assert "Filtered official-regtests options for core=fv3" in output
 
 
 def test_fetch_official_regtests_blocks_large_prefix_by_default(tmp_path: Path, monkeypatch) -> None:

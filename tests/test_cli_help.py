@@ -50,3 +50,13 @@ def test_rt_guide_help_has_core_option() -> None:
     result = runner.invoke(app, ["rt", "guide", "--help"])
     assert result.exit_code == 0
     assert "--core" in result.stdout
+
+
+def test_verify_help_uses_meaningful_metavars() -> None:
+    runner = CliRunner()
+    result = runner.invoke(app, ["verify", "--help"])
+    assert result.exit_code == 0
+    assert "REPO_PATH" in result.stdout
+    assert "CORE" in result.stdout
+    assert "DEPS_PREFIX" in result.stdout
+    assert "ESMF_MKFILE" in result.stdout
