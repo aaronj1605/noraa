@@ -42,34 +42,56 @@ If your image provides `python3.11`, you can use it explicitly. Otherwise use `p
 Use a virtual environment so NORAA dependencies are isolated from system Python.
 This keeps installs reproducible and avoids breaking OS-level Python tooling.
 
-## Clean Environment Flow
+## Clean Environment Setup
+
+Create a workspace:
 
 ```bash
-mkdir -p ~/work && cd ~/work
+mkdir -p ~/work
+cd ~/work
+```
 
-# NORAA repo + install
+Clone and install NORAA:
 
+```bash
 git clone https://github.com/aaronj1605/noraa.git
 cd noraa
 python3 -m venv .venv
 source .venv/bin/activate
 pip install -U pip
 pip install -e .
+```
 
-# Clean upstream ufsatm target
+Clone the upstream `ufsatm` target:
+
+```bash
 cd ~/work
 git clone --branch develop https://github.com/NOAA-EMC/ufsatm.git
 cd ufsatm
-
-# NORAA guided workflow (recommended)
-# Choose a core: mpas is the primary/default recommendation.
-noraa build --repo ~/work/ufsatm
-# Or explicitly:
-# noraa build --repo ~/work/ufsatm --core mpas
-# noraa build --repo ~/work/ufsatm --core fv3
 ```
 
-## Manual Workflow (Advanced)
+## Workflow Options
+
+### Guided Workflow (Recommended)
+
+Use the guided flow if you want NORAA to walk you through bootstrap and verify.
+MPAS is the primary/default recommendation.
+
+```bash
+noraa build --repo ~/work/ufsatm
+```
+
+Or choose the core explicitly:
+
+```bash
+noraa build --repo ~/work/ufsatm --core mpas
+```
+
+```bash
+noraa build --repo ~/work/ufsatm --core fv3
+```
+
+### Manual Workflow (Advanced)
 
 Use this if you want each stage explicitly:
 
