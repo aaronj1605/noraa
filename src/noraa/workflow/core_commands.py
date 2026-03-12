@@ -64,6 +64,33 @@ def register_core_commands(
     def _format_preflight_summary(issues: list[tuple[str, str]]) -> str:
         return preflight.format_preflight_summary(issues)
 
+    def _resolve_build_core(
+        repo_root: Path,
+        *,
+        requested_core: str | None,
+        cfg: ProjectConfig | None,
+        yes: bool,
+    ) -> str:
+        if requested_core:
+            return normalize_core(requested_core)
+        if cfg:
+            return normalize_core(cfg.core)
+        if yes:
+            print("No NORAA project config found. Defaulting to primary core: mpas.")
+            return "mpas"
+        print("Select core to build:")
+        print("1) mpas (Recommended)")
+        print("2) fv3")
+        choice = typer.prompt("Choose core number", default="1").strip().lower()
+        if choice in {"", "1", "mpas"}:
+            return "mpas"
+        if choice in {"2", "fv3"}:
+            return "fv3"
+        fail(
+            f"Unsupported core selection: {choice}",
+            next_step="Use option 1 for mpas or option 2 for fv3, or pass --core mpas|fv3",
+        )
+
     def _apply_fv3_local_fallbacks(repo_root: Path, resolved_deps: str | None) -> None:
         patched_r8 = _apply_fv3_fms_r8_fallback(repo_root, resolved_deps)
         if patched_r8:
@@ -334,7 +361,12 @@ def register_core_commands(
         """
         repo_root = target_repo(repo)
         cfg = load_project(repo_root)
-        selected_core = normalize_core(core or (cfg.core if cfg else "mpas"))
+        selected_core = _resolve_build_core(
+            repo_root,
+            requested_core=core,
+            cfg=cfg,
+            yes=yes,
+        )
         guided_build.run_build_core(
             repo_root=repo_root,
             clean=clean,
@@ -396,5 +428,6 @@ def register_core_commands(
         "run_verify": _run_verify,
         "verify_preflight_issues": _verify_preflight_issues,
         "format_preflight_summary": _format_preflight_summary,
+        "resolve_build_core": _resolve_build_core,
     }
     return verify_runner, compat

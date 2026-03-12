@@ -85,3 +85,46 @@ def test_build_core_routes_fv3_to_guided_build(monkeypatch: pytest.MonkeyPatch, 
     monkeypatch.setattr(cli.guided_build, "run_build_core", fake_run_build_core)
     cli.build(repo=".", core="fv3", clean=True, yes=True, esmf_branch="v8.6.1")
     assert calls["core"] == "fv3"
+
+
+def test_build_prompts_for_core_when_project_not_initialized(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    calls: dict[str, str] = {}
+    prompts: list[tuple[str, str]] = []
+    monkeypatch.setattr(cli, "_target_repo", lambda _repo: tmp_path)
+    monkeypatch.setattr(cli, "load_project", lambda _repo: None)
+
+    def fake_prompt(message: str, default: str = "") -> str:
+        prompts.append((message, default))
+        return "2"
+
+    def fake_run_build_core(**kwargs):
+        calls["core"] = kwargs["core"]
+
+    monkeypatch.setattr(cli.typer, "prompt", fake_prompt)
+    monkeypatch.setattr(cli.guided_build, "run_build_core", fake_run_build_core)
+
+    cli.build(repo=".", core=None, clean=True, yes=False, esmf_branch="v8.6.1")
+
+    assert prompts == [("Choose core number", "1")]
+    assert calls["core"] == "fv3"
+
+
+def test_build_yes_defaults_to_primary_mpas_when_project_not_initialized(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path, capsys
+) -> None:
+    calls: dict[str, str] = {}
+    monkeypatch.setattr(cli, "_target_repo", lambda _repo: tmp_path)
+    monkeypatch.setattr(cli, "load_project", lambda _repo: None)
+
+    def fake_run_build_core(**kwargs):
+        calls["core"] = kwargs["core"]
+
+    monkeypatch.setattr(cli.guided_build, "run_build_core", fake_run_build_core)
+
+    cli.build(repo=".", core=None, clean=True, yes=True, esmf_branch="v8.6.1")
+
+    out = capsys.readouterr().out
+    assert "Defaulting to primary core: mpas." in out
+    assert calls["core"] == "mpas"

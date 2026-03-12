@@ -110,6 +110,33 @@ def _self_test_repo_root(repo: str | None) -> Path:
     return repo_root
 
 
+def _resolve_build_core(
+    *,
+    requested_core: str | None,
+    cfg: ProjectConfig | None,
+    yes: bool,
+) -> str:
+    if requested_core:
+        return _normalize_core(requested_core)
+    if cfg:
+        return _normalize_core(cfg.core)
+    if yes:
+        print("No NORAA project config found. Defaulting to primary core: mpas.")
+        return "mpas"
+    print("Select core to build:")
+    print("1) mpas (Recommended)")
+    print("2) fv3")
+    choice = typer.prompt("Choose core number", default="1").strip().lower()
+    if choice in {"", "1", "mpas"}:
+        return "mpas"
+    if choice in {"2", "fv3"}:
+        return "fv3"
+    fail(
+        f"Unsupported core selection: {choice}",
+        next_step="Use option 1 for mpas or option 2 for fv3, or pass --core mpas|fv3",
+    )
+
+
 def _require_project(repo_root: Path) -> ProjectConfig:
     cfg = load_project(repo_root)
     if cfg is None:
@@ -199,7 +226,11 @@ def build(
 ):
     repo_root = _target_repo(repo)
     cfg = load_project(repo_root)
-    selected_core = _normalize_core(core or (cfg.core if cfg else "mpas"))
+    selected_core = _resolve_build_core(
+        requested_core=core,
+        cfg=cfg,
+        yes=yes,
+    )
     guided_build.run_build_core(
         repo_root=repo_root,
         clean=clean,

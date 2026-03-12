@@ -62,7 +62,11 @@ git clone --branch develop https://github.com/NOAA-EMC/ufsatm.git
 cd ufsatm
 
 # NORAA guided workflow (recommended)
-noraa build --repo ~/work/ufsatm --core mpas
+# Choose a core: mpas is the primary/default recommendation.
+noraa build --repo ~/work/ufsatm
+# Or explicitly:
+# noraa build --repo ~/work/ufsatm --core mpas
+# noraa build --repo ~/work/ufsatm --core fv3
 ```
 
 ## Manual Workflow (Advanced)
@@ -70,11 +74,11 @@ noraa build --repo ~/work/ufsatm --core mpas
 Use this if you want each stage explicitly:
 
 ```bash
-noraa init --repo ~/work/ufsatm
-noraa verify --preflight-only --repo ~/work/ufsatm
+noraa init --repo ~/work/ufsatm --core mpas
+noraa verify --preflight-only --repo ~/work/ufsatm --core mpas
 noraa bootstrap esmf --repo ~/work/ufsatm
 noraa bootstrap deps --repo ~/work/ufsatm
-noraa verify --repo ~/work/ufsatm
+noraa verify --repo ~/work/ufsatm --core mpas
 ```
 
 ## Command Purpose
