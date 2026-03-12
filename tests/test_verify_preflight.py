@@ -2,7 +2,11 @@ from __future__ import annotations
 
 from pathlib import Path
 
+import typer
+
 from noraa import cli
+from noraa.project import ProjectConfig
+from noraa.workflow import core_commands
 
 
 def test_verify_preflight_detects_missing_ccpp_prebuild(tmp_path: Path) -> None:
@@ -161,3 +165,80 @@ def test_format_preflight_summary_contains_action_lines() -> None:
     assert "Preflight identified blocking issues:" in summary
     assert "Action required: noraa bootstrap esmf --repo /tmp/ufsatm" in summary
     assert "Action required: pip install -U 'cmake>=3.28'" in summary
+
+
+def test_fv3_preflight_only_does_not_apply_local_fallbacks(
+    tmp_path: Path, monkeypatch, capsys
+) -> None:
+    cfg = ProjectConfig(
+        repo_path=str(tmp_path),
+        core="fv3",
+        verify_script="scripts/verify_fv3_smoke.sh",
+    )
+    _, compat = core_commands.register_core_commands(
+        app=typer.Typer(),
+        target_repo=lambda _path: tmp_path,
+        require_project=lambda _repo_root: cfg,
+        normalize_core=lambda value: value,
+    )
+    monkeypatch.setattr(
+        core_commands.preflight,
+        "verify_preflight_issues",
+        lambda *_args, **_kwargs: [],
+    )
+
+    fallback_calls: list[str] = []
+
+    def _record(name: str):
+        def inner(*_args, **_kwargs):
+            fallback_calls.append(name)
+            return False
+
+        return inner
+
+    monkeypatch.setattr(
+        core_commands, "_apply_fv3_fms_r8_fallback", _record("fms_r8")
+    )
+    monkeypatch.setattr(
+        core_commands, "_apply_fv3_fms_required_fallback", _record("fms_required")
+    )
+    monkeypatch.setattr(
+        core_commands,
+        "_apply_fv3_top_level_dependency_guards",
+        _record("dependency_guards"),
+    )
+    monkeypatch.setattr(
+        core_commands, "_apply_fv3_external_sst_fallback", _record("external_sst")
+    )
+    monkeypatch.setattr(
+        core_commands,
+        "_apply_fv3_stochastic_wrapper_stub",
+        _record("stochastic_wrapper"),
+    )
+    monkeypatch.setattr(
+        core_commands, "_apply_fv3_update_ca_fallback", _record("update_ca")
+    )
+    monkeypatch.setattr(
+        core_commands,
+        "_apply_fv3_stochy_pattern_fallback",
+        _record("stochy_pattern"),
+    )
+    monkeypatch.setattr(
+        core_commands, "_apply_fv3_fv_dynamics_kind_fix", _record("fv_dynamics")
+    )
+
+    compat["run_verify"](
+        repo_root=tmp_path,
+        core="fv3",
+        deps_prefix=None,
+        esmf_mkfile=None,
+        clean=True,
+        preflight_only=True,
+        fv3_fms_r8_fallback=True,
+    )
+
+    out = capsys.readouterr().out
+    assert "FV3 verify mode: using NORAA CMake fallback path." in out
+    assert "Preflight OK. No blocking issues found." in out
+    assert "Applied local FV3 fallback" not in out
+    assert fallback_calls == []

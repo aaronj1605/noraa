@@ -64,6 +64,38 @@ def register_core_commands(
     def _format_preflight_summary(issues: list[tuple[str, str]]) -> str:
         return preflight.format_preflight_summary(issues)
 
+    def _apply_fv3_local_fallbacks(repo_root: Path, resolved_deps: str | None) -> None:
+        patched_r8 = _apply_fv3_fms_r8_fallback(repo_root, resolved_deps)
+        if patched_r8:
+            print(
+                "Applied local FV3 fallback: switched FMS component requirement from R4 to R8 "
+                "(fms_r4 not found in deps)."
+            )
+        else:
+            print("FV3 fallback check: no R4->R8 patch needed.")
+        if _apply_fv3_fms_required_fallback(repo_root):
+            print(
+                "Applied local FV3 fallback: relaxed FMS component requirement to plain REQUIRED."
+            )
+        if _apply_fv3_top_level_dependency_guards(repo_root):
+            print("Applied local FV3 fallback: guarded optional top-level FV3 dependencies.")
+        if _apply_fv3_external_sst_fallback(repo_root):
+            print(
+                "Applied local FV3 fallback: patched external_sst for newer FMS amip_interp exports."
+            )
+        if _apply_fv3_stochastic_wrapper_stub(repo_root):
+            print(
+                "Applied local FV3 fallback: replaced stochastic_physics_wrapper with no-op stub."
+            )
+        if _apply_fv3_update_ca_fallback(repo_root):
+            print("Applied local FV3 fallback: disabled update_ca restart hooks.")
+        if _apply_fv3_stochy_pattern_fallback(repo_root):
+            print("Applied local FV3 fallback: disabled get_stochy_pattern restart hooks.")
+        if _apply_fv3_fv_dynamics_kind_fix(repo_root):
+            print(
+                "Applied local FV3 fallback: fixed fv_dynamics pointer kinds for GFDL interstitial."
+            )
+
     def _run_verify(
         *,
         repo_root: Path,
@@ -77,37 +109,6 @@ def register_core_commands(
         cfg = require_project(repo_root)
         selected_core = normalize_core(core or cfg.core)
         resolved_deps = resolve_deps_prefix(repo_root, deps_prefix)
-        if selected_core == "fv3" and fv3_fms_r8_fallback:
-            patched_r8 = _apply_fv3_fms_r8_fallback(repo_root, resolved_deps)
-            if patched_r8:
-                print(
-                    "Applied local FV3 fallback: switched FMS component requirement from R4 to R8 "
-                    "(fms_r4 not found in deps)."
-                )
-            else:
-                print("FV3 fallback check: no R4->R8 patch needed.")
-            if _apply_fv3_fms_required_fallback(repo_root):
-                print(
-                    "Applied local FV3 fallback: relaxed FMS component requirement to plain REQUIRED."
-                )
-            if _apply_fv3_top_level_dependency_guards(repo_root):
-                print("Applied local FV3 fallback: guarded optional top-level FV3 dependencies.")
-            if _apply_fv3_external_sst_fallback(repo_root):
-                print(
-                    "Applied local FV3 fallback: patched external_sst for newer FMS amip_interp exports."
-                )
-            if _apply_fv3_stochastic_wrapper_stub(repo_root):
-                print(
-                    "Applied local FV3 fallback: replaced stochastic_physics_wrapper with no-op stub."
-                )
-            if _apply_fv3_update_ca_fallback(repo_root):
-                print("Applied local FV3 fallback: disabled update_ca restart hooks.")
-            if _apply_fv3_stochy_pattern_fallback(repo_root):
-                print("Applied local FV3 fallback: disabled get_stochy_pattern restart hooks.")
-            if _apply_fv3_fv_dynamics_kind_fix(repo_root):
-                print(
-                    "Applied local FV3 fallback: fixed fv_dynamics pointer kinds for GFDL interstitial."
-                )
         script = Path(cfg.verify_script) if cfg.verify_script else None
         if selected_core == "fv3":
             script = None
@@ -128,6 +129,8 @@ def register_core_commands(
             return
         if issues:
             raise SystemExit(_format_preflight_summary(issues))
+        if selected_core == "fv3" and fv3_fms_r8_fallback:
+            _apply_fv3_local_fallbacks(repo_root, resolved_deps)
         out = log_dir(repo_root, "verify")
 
         resolved_esmf = resolve_esmf_mkfile(repo_root, resolved_deps, esmf_mkfile)
